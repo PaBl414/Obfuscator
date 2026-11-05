@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-editors"
+version = "1.0.0"
+description = "A modular Python source transformation pipeline"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+code-editors = "code_editors.pipeline:main"
+
+[tool.setuptools.packages.find]
+include = ["code_editors*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100

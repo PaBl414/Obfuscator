@@ -1,1 +1,90 @@
-# Obfuscator
+# Code Editors
+
+A standard-library-only toolkit for applying six source transformations to Python files.
+
+## Requirements
+
+- Python 3.10 or newer
+- Tkinter is only needed when using the graphical file or folder picker
+
+## Run the pipeline
+
+Run the command without arguments to choose a Python file in a dialog:
+
+```powershell
+python pipeline.py
+```
+
+You can also pass the file directly:
+
+```powershell
+python pipeline.py path\to\script.py
+python pipeline.py path\to\script.py --output path\to\result.py
+```
+
+The input file is preserved. By default, the result is written next to it as
+`<name>_edited.py`.
+
+## Process a folder
+
+Select a folder in a dialog:
+
+```powershell
+python pipeline.py --folder
+```
+
+Or provide paths directly:
+
+```powershell
+python pipeline.py --folder path\to\source
+python pipeline.py --folder path\to\source --output path\to\source_processed
+```
+
+Every `.py` file below the input folder is transformed. Relative paths are
+preserved in a new output folder. Other files are copied unchanged. Common
+generated and environment folders such as `.venv`, `venv`, `__pycache__`,
+`build`, `dist`, and `node_modules` are excluded. The output folder must not
+already exist and must be outside the input folder.
+
+## Transformation order
+
+1. Junk editor
+2. Import obfuscation (conservative explicit aliases)
+3. XOR encryption
+4. Flow obfuscator
+5. Flattener (opaque predicates)
+6. Name mangler
+7. Cleanup
+
+The import pass adds redundant explicit aliases only where the compiled
+instruction stream stays identical. It leaves existing aliases, dotted
+`import` statements, star imports, and `__future__` imports unchanged. The
+import names remain visible; this conservative pass changes their spelling
+form without replacing Python's import mechanism.
+
+Use `--seed N` for reproducible transformations. `--junk-count N` controls the
+number of inserted junk blocks, and `--name-length N` sets generated identifier
+length to 4, 5, or 6 characters.
+
+Run the full sequence any positive number of times. Each layer uses the
+previous layer's output:
+
+```powershell
+python pipeline.py path\to\script.py --layers 1
+python pipeline.py path\to\script.py --layers 2 --seed 100
+python pipeline.py path\to\script.py --layers 5 --seed 100
+```
+
+With `--layers N` and a supplied seed `S`, the pipeline uses the deterministic
+seeds `S` through `S + N - 1`. Without `--seed`, it chooses a distinct random
+seed for each layer. The same setting applies to every Python file in folder
+mode.
+
+## Project layout
+
+```text
+pipeline.py                 Stable command-line entry point
+code_editors/
+  pipeline.py               File and folder orchestration
+  stages/                    Individual transformation implementations
+```
