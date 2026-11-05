@@ -106,14 +106,14 @@ class SafetyVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Break(self, node: ast.Break) -> None:
-        self.reasons.append(
-            "break statements are conservatively excluded from transformation"
-        )
+        # Compound statements are kept intact inside their dispatcher branch,
+        # so break remains nested in the same source-level loop.
+        self.generic_visit(node)
 
     def visit_Continue(self, node: ast.Continue) -> None:
-        self.reasons.append(
-            "continue statements are conservatively excluded from transformation"
-        )
+        # Compound statements are kept intact inside their dispatcher branch,
+        # so continue remains nested in the same source-level loop.
+        self.generic_visit(node)
 
 
 def _module_header(

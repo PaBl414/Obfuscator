@@ -11,8 +11,9 @@ import sys
 import tokenize
 from pathlib import Path
 
-from .stages import cleanup, flattener, flow_obfuscator, import_obfuscator, junk_editor
-from .stages import name_mangler, xor_encryption
+from .stages import cleanup, flattener, flow_obfuscator, function_flow
+from .stages import import_obfuscator, junk_editor, name_mangler, numeric_obfuscator
+from .stages import xor_encryption
 
 SKIPPED_DIRECTORIES = {
     ".git", ".mypy_cache", ".pytest_cache", ".venv", "__pycache__",
@@ -47,7 +48,7 @@ def transform(
     junk_count: int = 8,
     name_length: int = 5,
 ) -> tuple[str, list[str]]:
-    """Apply all six transformations in their documented order."""
+    """Apply all transformation stages in their documented order."""
     rng = random.Random(seed)
     report: list[str] = []
 
@@ -70,24 +71,38 @@ def transform(
         lines[:insert_at] + xor_encryption.build_decryptor(key) + lines[insert_at:]
     )
     compile(source, "<pipeline-xor>", "exec")
-    report.append("3. XOR encryption: encrypted string and bytes literals")
+    report.append("3. XOR encryption: encrypted literals with per-literal keys")
+
+    source, function_count = function_flow.flatten_simple_functions(
+        source, seed=rng.randrange(2**32)
+    )
+    report.append(
+        f"4. Function flow: flattened {function_count} simple functions"
+    )
 
     source = flow_obfuscator.obfuscate(source, seed=rng.randrange(2**32))
-    report.append("4. Flow obfuscator: transformed control flow")
+    report.append("5. Flow obfuscator: transformed module control flow")
 
     source, predicate_count = flattener.add_opaque_predicates(
         source, seed=rng.randrange(2**32)
     )
-    report.append(f"5. Flattener: added {predicate_count} predicates")
+    report.append(f"6. Flattener: added {predicate_count} predicates")
 
     source, renamed_count = _mangle_source(
         source, name_length, random.Random(rng.randrange(2**32))
     )
-    report.append(f"6. Name mangler: renamed {renamed_count} identifiers")
+    report.append(f"7. Name mangler: renamed {renamed_count} identifiers")
 
     source = cleanup.process(source)
     compile(source, "<pipeline-cleanup>", "exec")
-    report.append("7. Cleanup: removed comments and compacted formatting")
+    report.append("8. Cleanup: removed comments and compacted formatting")
+
+    source, numeric_count = numeric_obfuscator.obfuscate_numeric_constants(
+        source, seed=rng.randrange(2**32)
+    )
+    report.append(
+        f"9. Numeric obfuscation: rewrote {numeric_count} integer literals"
+    )
     return source, report
 
 
@@ -116,7 +131,7 @@ def transform_layers(
     junk_count: int = 8,
     name_length: int = 5,
 ) -> tuple[str, list[str]]:
-    """Run the complete six-stage pipeline once or twice in sequence."""
+    """Run the complete pipeline the requested number of times in sequence."""
     seeds = _layer_seeds(seed, layers)
     report: list[str] = []
     for layer_number, layer_seed in enumerate(seeds, start=1):
@@ -272,7 +287,7 @@ def _choose_folder() -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run the six source transformation stages on a file or folder."
+        description="Run the source transformation pipeline on a file or folder."
     )
     parser.add_argument(
         "target", nargs="?", type=Path,
@@ -309,7 +324,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.name_length, args.layers
             )
         )
-    except (OSError, SyntaxError, UnicodeError, ValueError, RuntimeError) as exc:
+    except (
+        OSError,
+        SyntaxError,
+        UnicodeError,
+        ValueError,
+        RuntimeError,
+        tokenize.TokenError,
+        flow_obfuscator.UnsafeToTransform,
+    ) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     print("\n".join(lines))

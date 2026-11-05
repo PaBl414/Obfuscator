@@ -11,6 +11,13 @@ code_editors/stages/__init__.py
 code_editors/stages/cleanup.py
 code_editors/stages/flattener.py
 code_editors/stages/flow_obfuscator.py
+code_editors/stages/function_flow.py
+code_editors/stages/import_obfuscator.py
 code_editors/stages/junk_editor.py
 code_editors/stages/name_mangler.py
+code_editors/stages/numeric_obfuscator.py
 code_editors/stages/xor_encryption.py
+tests/test_function_flow.py
+tests/test_numeric_obfuscator.py
+tests/test_pipeline.py
+tests/test_xor_encryption.py

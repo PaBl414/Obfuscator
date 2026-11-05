@@ -7,6 +7,7 @@ name = "code-editors"
 version = "1.0.0"
 description = "A modular Python source transformation pipeline"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = []
 

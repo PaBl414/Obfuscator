@@ -1,11 +1,12 @@
 # Code Editors
 
-A standard-library-only toolkit for applying six source transformations to Python files.
+A standard-library-only toolkit for applying source transformations to Python files.
 
 ## Requirements
 
 - Python 3.10 or newer
 - Tkinter is only needed when using the graphical file or folder picker
+- No third-party runtime packages are required
 
 ## Run the pipeline
 
@@ -50,17 +51,32 @@ already exist and must be outside the input folder.
 
 1. Junk editor
 2. Import obfuscation (conservative explicit aliases)
-3. XOR encryption
-4. Flow obfuscator
-5. Flattener (opaque predicates)
-6. Name mangler
-7. Cleanup
+3. XOR encryption (distinct key per literal)
+4. Function flow (supported simple synchronous functions)
+5. Flow obfuscator
+6. Flattener (opaque predicates)
+7. Name mangler
+8. Cleanup
+9. Numeric literal obfuscation (equivalent integer bases)
 
 The import pass adds redundant explicit aliases only where the compiled
 instruction stream stays identical. It leaves existing aliases, dotted
 `import` statements, star imports, and `__future__` imports unchanged. The
 import names remain visible; this conservative pass changes their spelling
 form without replacing Python's import mechanism.
+
+The XOR stage assigns a distinct key to each encrypted literal. The keys are
+stored with their payloads in the output, so this is source obfuscation rather
+than secure data encryption.
+
+Function flow targets undecorated synchronous functions. It supports loops,
+`try`, `with`, `match`, nested definitions, and selected simple statements;
+compound statements remain intact inside a dispatcher state. It skips
+generators, async functions, unsupported statement forms, and functions using
+constructs the safety visitor rejects. External debuggers or tools that inspect
+code objects can observe the changed function bytecode.
+Numeric obfuscation changes only the spelling of integer literals (decimal,
+hexadecimal, octal, or binary); it verifies that the parsed AST is unchanged.
 
 Use `--seed N` for reproducible transformations. `--junk-count N` controls the
 number of inserted junk blocks, and `--name-length N` sets generated identifier
@@ -87,4 +103,17 @@ pipeline.py                 Stable command-line entry point
 code_editors/
   pipeline.py               File and folder orchestration
   stages/                    Individual transformation implementations
+tests/                      Unit and end-to-end tests
+.github/workflows/          GitHub Actions CI
+```
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for
+details.
+
+## Run tests
+
+```powershell
+python -m unittest discover -s tests -v
 ```

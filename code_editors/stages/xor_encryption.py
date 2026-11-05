@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Encrypt string and bytes literals in a Python source file using XOR."""
+"""Encrypt string and bytes literals with distinct per-literal XOR keys."""
 import ast
 import random
+import secrets
 import sys
 
 
 def generate_key(length=16):
-    return bytes(random.randint(0, 255) for _ in range(length))
+    return secrets.token_bytes(length)
 
 
 def xor_bytes(data: bytes, key: bytes) -> bytes:
@@ -79,8 +80,19 @@ def find_insert_line(tree, source):
 
 
 def transform_source(source: str, key: bytes):
+    if not key:
+        raise ValueError("The master key must not be empty.")
     tree = ast.parse(source)
     skip = collect_skip_ids(tree)
+    key_rng = random.Random(int.from_bytes(key, "big"))
+    used_keys: set[bytes] = set()
+
+    def new_literal_key() -> bytes:
+        literal_key = bytes(key_rng.randrange(256) for _ in range(16))
+        while literal_key in used_keys:
+            literal_key = bytes(key_rng.randrange(256) for _ in range(16))
+        used_keys.add(literal_key)
+        return literal_key
 
     source_bytes = source.encode('utf-8')
     lines = source.split('\n')
@@ -97,11 +109,13 @@ def transform_source(source: str, key: bytes):
     def visit(node):
         if isinstance(node, ast.Constant) and id(node) not in skip:
             if isinstance(node.value, str):
-                enc = xor_bytes(node.value.encode('utf-8'), key).hex()
-                repl = f"_d('{enc}')".encode('utf-8')
+                literal_key = new_literal_key()
+                enc = xor_bytes(node.value.encode('utf-8'), literal_key).hex()
+                repl = f"_d('{enc}', '{literal_key.hex()}')".encode('utf-8')
             elif isinstance(node.value, bytes):
-                enc = xor_bytes(node.value, key).hex()
-                repl = f"_db('{enc}')".encode('utf-8')
+                literal_key = new_literal_key()
+                enc = xor_bytes(node.value, literal_key).hex()
+                repl = f"_db('{enc}', '{literal_key.hex()}')".encode('utf-8')
             else:
                 for c in ast.iter_child_nodes(node): visit(c)
                 return
@@ -120,14 +134,15 @@ def transform_source(source: str, key: bytes):
     return out.decode('utf-8'), tree
 
 
-def build_decryptor(key: bytes):
-    kh = key.hex()
+def build_decryptor(key: bytes | None = None):
+    """Build runtime decoders; per-literal keys are stored beside each payload."""
     return [
-        f"_k = bytes.fromhex('{kh}')",
-        "def _d(s):",
+        "def _d(s, k):",
+        "    _k = bytes.fromhex(k)",
         "    _b = bytes.fromhex(s)",
         "    return bytes(c ^ _k[i % len(_k)] for i, c in enumerate(_b)).decode('utf-8')",
-        "def _db(s):",
+        "def _db(s, k):",
+        "    _k = bytes.fromhex(k)",
         "    _b = bytes.fromhex(s)",
         "    return bytes(c ^ _k[i % len(_k)] for i, c in enumerate(_b))",
     ]
@@ -159,7 +174,7 @@ def encrypt_file(path, out_path=None, key=None):
         f.write(final)
 
     print(f"Saved: {out_path}")
-    print(f"Key (hex): {key.hex()}")
+    print("Encrypted literals use distinct embedded keys.")
 
 
 if __name__ == '__main__':
