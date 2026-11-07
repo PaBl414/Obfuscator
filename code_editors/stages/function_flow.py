@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import ast
 import io
+import keyword
 import random
+import string
 import tokenize
+from dataclasses import dataclass
 
 from .flow_obfuscator import SafetyVisitor
 
@@ -31,6 +34,21 @@ if hasattr(ast, "TryStar"):
     _SUPPORTED_STATEMENTS += (ast.TryStar,)
 
 
+# Słowa, które zdradzają obfuskator — nigdy nie używać w nazwach stanu.
+_OBFUSCATOR_WORDS = frozenset(
+    {
+        "state", "dispatcher", "dispatch", "flow", "flatten", "obf",
+        "obfuscate", "vm", "switch", "jmp", "jump", "label", "node",
+        "block", "machine", "fsm", "control", "cfg", "opaque",
+    }
+)
+
+_STATE_PREFIXES = ("_", "__", "_tmp_", "_v", "_p", "_acc", "_buf",
+                   "_res", "_cur", "_last", "_it", "_seq", "_n", "")
+_STATE_SUFFIXES = ("", "_", "_0", "_1", "_2", "_p", "_q", "_x",
+                   "_idx", "_tmp", "_val", "_res", "_n")
+
+
 class _FunctionSafetyVisitor(SafetyVisitor):
     """Allow loop control local to nested loops in an eligible function."""
 
@@ -39,6 +57,15 @@ class _FunctionSafetyVisitor(SafetyVisitor):
 
     def visit_Continue(self, node: ast.Continue) -> None:
         pass
+
+
+@dataclass
+class _DispatchBlock:
+    statement: ast.stmt | None = None
+    test: ast.expr | None = None
+    next_state: int = 0
+    true_state: int = 0
+    false_state: int = 0
 
 
 def _supported_suite(statements: list[ast.stmt]) -> bool:
@@ -73,34 +100,158 @@ def _safe_to_transform(function: ast.FunctionDef) -> bool:
 
 
 def _fresh_state_name(rng: random.Random, used: set[str]) -> str:
+    """Generate an identifier that looks like an ordinary local variable.
+
+    Uses a random prefix/suffix from a pool of natural-looking tokens, a short
+    random core, and avoids names that signal an obfuscator. Prefers short
+    names (1–3 chars core) to match typical local variables.
+    """
+    for _ in range(10_000):
+        prefix = rng.choice(_STATE_PREFIXES)
+        suffix = rng.choice(_STATE_SUFFIXES)
+        core_len = rng.choice((1, 1, 2, 2, 3))
+        core = "".join(rng.choice(string.ascii_lowercase) for _ in range(core_len))
+        name = f"{prefix}{core}{suffix}"
+        if (
+            name.isidentifier()
+            and not keyword.iskeyword(name)
+            and name not in used
+            and not any(word in name.lower() for word in _OBFUSCATOR_WORDS)
+        ):
+            used.add(name)
+            return name
+    # Awaryjnie: unikalny identyfikator, nadal bez słów-kluczy obfuskatorów.
     while True:
-        name = f"_local_flow_{rng.getrandbits(64):016x}"
+        name = "_" + "".join(rng.choice(string.ascii_lowercase) for _ in range(4))
         if name not in used:
             used.add(name)
             return name
 
 
+def _state_token(state_id: int, rng: random.Random) -> str:
+    """Encode a numeric state id as a short random string token.
+
+    Manglers do not touch string literals, so the dispatcher's case labels
+    remain stable and unrecognisable (no large integers to grep for).
+    """
+    length = rng.choice((4, 5, 6))
+    alphabet = string.ascii_lowercase + string.digits
+    return "".join(rng.choice(alphabet) for _ in range(length))
+
+
+def _state_predicate(state_name: str, state_token: str, rng: random.Random) -> str:
+    """Return a predicate equivalent to ``state_name == state_token``.
+
+    All variants are correct for any integer or string ``state_name`` when
+    ``state_token`` is a string (comparison), and for integers when token is
+    an int. None is a tautology, so testing on a random value yields ``False``
+    and does not reveal the obfuscation.
+    """
+    variants = (
+        f"({state_name} ^ {state_token}) == 0",
+        f"({state_name} - {state_token}) == 0",
+        f"not ({state_name} != {state_token})",
+        f"not ({state_name} ^ {state_token})",
+        f"({state_name} - {state_token}) * ({state_name} - {state_token}) == 0",
+        f"({state_name} ^ {state_token}) < 1",
+        f"({state_name} ^ {state_token}) <= 0",
+    )
+    return rng.choice(variants)
+
+
+def _state_predicate_for_token(
+    state_name: str, state_token: str, rng: random.Random
+) -> str:
+    """Predicate equivalent to ``state_name == state_token`` for string tokens.
+
+    Uses only string-safe operations: equality and membership in a singleton
+    tuple. No ``is`` (would emit ``SyntaxWarning`` and break after XOR
+    encryption, which destroys string interning), no arithmetic, no
+    tautologies.
+    """
+    variants = (
+        f"({state_name} == {state_token!r})",
+        f"({state_name} in ({state_token!r},))",
+        f"not ({state_name} != {state_token!r})",
+        f"({state_name} == {state_token!r} and {state_name} == {state_token!r})",
+        f"({state_token!r} == {state_name})",
+    )
+    predicate = rng.choice(variants)
+    # Losowo podwójna negacja — łamie regex ``if .* == ...:``
+    if rng.random() < 0.3:
+        predicate = f"not not ({predicate})"
+    return predicate
+
+
 def _dispatcher_source(
     statements: list[ast.stmt], state_name: str, rng: random.Random
 ) -> str:
-    count = len(statements)
-    state_ids = rng.sample(range(100_000, 2_147_483_647), count)
+    blocks: list[_DispatchBlock] = []
+
+    def build_suite(suite: list[ast.stmt], successor: int) -> int:
+        entry = successor
+        for statement in reversed(suite):
+            if isinstance(statement, ast.If):
+                true_state = build_suite(statement.body, entry)
+                false_state = build_suite(statement.orelse, entry)
+                blocks.append(
+                    _DispatchBlock(
+                        test=statement.test,
+                        true_state=true_state,
+                        false_state=false_state,
+                    )
+                )
+            else:
+                blocks.append(
+                    _DispatchBlock(statement=statement, next_state=entry)
+                )
+            entry = len(blocks)
+        return entry
+
+    entry_state = build_suite(statements, 0)
+    count = len(blocks)
+    # Unikalne tokeny stanów (stringi) — mangler ich nie tknie.
+    tokens: list[str] = []
+    seen: set[str] = set()
+    while len(tokens) < count:
+        token = _state_token(0, rng)
+        if token not in seen:
+            seen.add(token)
+            tokens.append(token)
     dispatch_order = list(range(count))
     rng.shuffle(dispatch_order)
-    valid_states = ", ".join(map(str, state_ids))
+    valid_tokens = ", ".join(repr(t) for t in tokens)
     if count == 1:
-        valid_states += ","
+        valid_tokens += ","
 
-    lines = [f"{state_name} = {state_ids[0]}", f"while {state_name} in ({valid_states}):"]
+    def encoded_state(logical_state: int) -> str:
+        return repr("end") if logical_state == 0 else repr(tokens[logical_state - 1])
+
+    # Mniej rozpoznawalna forma pętli: ``while state:`` + wewnętrzny break.
+    lines = [
+        f"{state_name} = {encoded_state(entry_state)}",
+        f"while {state_name}:",
+        f"    if {state_name} not in ({valid_tokens}):",
+        "        break",
+    ]
     for position, original_index in enumerate(dispatch_order):
         keyword = "if" if position == 0 else "elif"
-        state_id = state_ids[original_index]
-        next_state = state_ids[original_index + 1] if original_index + 1 < count else 0
-        lines.append(f"    {keyword} {state_name} == {state_id}:")
-        rendered = ast.unparse(statements[original_index]).splitlines()
-        lines.extend(f"        {line}" for line in rendered)
-        lines.append(f"        {state_name} = {next_state}")
-    lines.append(f"del {state_name}")
+        token = tokens[original_index]
+        block = blocks[original_index]
+        predicate = _state_predicate_for_token(state_name, token, rng)
+        # Wcięcie o jeden poziom głębiej niż w oryginale (pętla + if/elif).
+        lines.append(f"    {keyword} {predicate}:")
+        if block.test is not None:
+            lines.append(f"        if {ast.unparse(block.test)}:")
+            lines.append(f"            {state_name} = {encoded_state(block.true_state)}")
+            lines.append("        else:")
+            lines.append(f"            {state_name} = {encoded_state(block.false_state)}")
+        else:
+            rendered = ast.unparse(block.statement).splitlines()
+            lines.extend(f"        {line}" for line in rendered)
+            lines.append(f"        {state_name} = {encoded_state(block.next_state)}")
+    if rng.random() < 0.5:
+        lines.append(f"del {state_name}")
     return "\n".join(lines)
 
 
@@ -111,8 +262,9 @@ def flatten_simple_functions(
 
     Undecorated synchronous functions with supported statements are eligible.
     Yield, await, dynamic namespace access, and unsupported statements cause
-    the function to be skipped. Loops and exception handlers remain intact
-    inside a single dispatcher state.
+    the function to be skipped. Nested ``if`` suites become separate states;
+    loops and exception handlers remain intact inside a single dispatcher
+    state to preserve their control semantics.
     """
     tree = ast.parse(source, type_comments=True)
     rng = random.Random(seed)

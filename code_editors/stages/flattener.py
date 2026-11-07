@@ -45,17 +45,54 @@ def _is_integer(node: ast.AST) -> bool:
 
 
 def _dispatcher_state(tree: ast.Module) -> tuple[ast.While, str] | None:
+    def membership_name(test: ast.expr) -> str | None:
+        if isinstance(test, ast.Compare):
+            if (
+                isinstance(test.left, ast.Name)
+                and test.ops
+                and isinstance(test.ops[0], ast.In)
+                and test.comparators
+                and isinstance(test.comparators[0], (ast.Tuple, ast.List))
+            ):
+                return test.left.id
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            for value in test.values:
+                name = membership_name(value)
+                if name is not None:
+                    return name
+        return None
+
+    def membership_compare(test: ast.expr, name: str) -> ast.Compare | None:
+        if (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == name
+            and test.ops
+            and isinstance(test.ops[0], ast.In)
+            and test.comparators
+            and isinstance(test.comparators[0], (ast.Tuple, ast.List))
+        ):
+            return test
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            for value in test.values:
+                found = membership_compare(value, name)
+                if found is not None:
+                    return found
+        return None
+
     for loop in ast.walk(tree):
-        if not isinstance(loop, ast.While) or not isinstance(loop.test, ast.Compare):
+        if not isinstance(loop, ast.While):
             continue
-        test = loop.test
-        if not (isinstance(test.left, ast.Name) and test.ops and isinstance(test.ops[0], ast.In)
-                and test.comparators and isinstance(test.comparators[0], (ast.Tuple, ast.List))):
+        name = membership_name(loop.test)
+        if name is None:
             continue
-        name = test.left.id
         if not STATE_NAME.fullmatch(name):
             continue
-        states = test.comparators[0].elts
+
+        membership = membership_compare(loop.test, name)
+        if membership is None:
+            continue
+        states = membership.comparators[0].elts
         if not states or not all(_is_integer(item) for item in states):
             continue
         return loop, name
@@ -63,7 +100,7 @@ def _dispatcher_state(tree: ast.Module) -> tuple[ast.While, str] | None:
 
 
 def _is_state_branch(test: ast.expr, state_name: str) -> bool:
-    return (
+    if (
         isinstance(test, ast.Compare)
         and isinstance(test.left, ast.Name)
         and test.left.id == state_name
@@ -71,6 +108,12 @@ def _is_state_branch(test: ast.expr, state_name: str) -> bool:
         and isinstance(test.ops[0], ast.Eq)
         and len(test.comparators) == 1
         and _is_integer(test.comparators[0])
+    ):
+        return True
+    return (
+        isinstance(test, ast.BoolOp)
+        and isinstance(test.op, ast.And)
+        and any(_is_state_branch(value, state_name) for value in test.values)
     )
 
 

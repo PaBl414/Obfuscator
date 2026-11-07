@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import ast
 import dis
+import io
+import random
+import tokenize
 from types import CodeType
 
 
@@ -66,3 +69,178 @@ def obfuscate_imports(source: str) -> tuple[str, int]:
         raise ValueError("Import rewriting changed the compiled instruction stream.")
 
     return rewritten, len(insertions)
+
+
+def _unsafe_runtime_import_reason(tree: ast.Module) -> str | None:
+    sensitive_names = {"__builtins__", "__import__", "globals", "locals"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in sensitive_names:
+            return f"source uses {node.id}"
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            if sensitive_names.intersection(node.names):
+                return "source changes the scope of import-related builtins"
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module_names = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module or ""]
+            )
+            if any(name == "builtins" for name in module_names):
+                return "source imports builtins"
+        if isinstance(node, ast.Attribute) and node.attr in {
+            "__import__", "meta_path", "path_hooks"
+        }:
+            return f"source accesses import hook attribute {node.attr}"
+    return None
+
+
+def _runtime_import_helper_name(source: str, rng: random.Random) -> str:
+    used = {
+        token.string
+        for token in tokenize.generate_tokens(io.StringIO(source).readline)
+        if token.type == tokenize.NAME
+    }
+    while True:
+        candidate = f"_load_{rng.getrandbits(64):016x}"
+        if candidate not in used:
+            return candidate
+
+
+def _module_header_insert_line(tree: ast.Module, source: str) -> int:
+    insert = 1 if source.startswith("#!") else 0
+    if tree.body and isinstance(tree.body[0], ast.Expr):
+        value = tree.body[0].value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            insert = max(insert, value.end_lineno or 0)
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+            insert = max(insert, node.end_lineno or 0)
+    return insert
+
+
+def obfuscate_imports_runtime(
+    source: str, seed: int | None = None
+) -> tuple[str, int, int]:
+    """Hide supported import paths behind runtime decoding and ``__import__``.
+
+    Star imports, future imports, and multi-name ``from`` imports are retained
+    unchanged. Sources that explicitly manipulate import builtins or scope
+    introspection are left unchanged to reduce semantic risk.
+    """
+    tree = ast.parse(source, type_comments=True)
+    unsafe_reason = _unsafe_runtime_import_reason(tree)
+    if unsafe_reason:
+        import_count = sum(
+            isinstance(node, (ast.Import, ast.ImportFrom))
+            for node in ast.walk(tree)
+        )
+        return source, 0, import_count
+
+    rng = random.Random(seed)
+    helper_name = _runtime_import_helper_name(source, rng)
+    edits: list[tuple[int, int, str]] = []
+    changed = 0
+    skipped = 0
+
+    def encode(value: str) -> tuple[tuple[tuple[int, ...], int], ...]:
+        """XOR-encode a value in independently masked, variable-sized chunks."""
+        chunks: list[tuple[tuple[int, ...], int]] = []
+        offset = 0
+        while offset < len(value):
+            chunk_size = rng.randint(2, 5)
+            chunk = value[offset : offset + chunk_size]
+            mask = rng.randrange(1, 256)
+            chunks.append((tuple(ord(char) ^ mask for char in chunk), mask))
+            offset += chunk_size
+        return tuple(chunks)
+
+    def call_expression(
+        module_name: str,
+        fromlist: tuple[str, ...],
+        symbol_name: str,
+        level: int,
+        extract_symbol: bool,
+    ) -> str:
+        encoded_module = encode(module_name)
+        encoded_fromlist = tuple(encode(name) for name in fromlist)
+        encoded_symbol = encode(symbol_name)
+        return (
+            f"{helper_name}({encoded_module!r}, "
+            f"{encoded_fromlist!r}, {encoded_symbol!r}, {level}, "
+            f"{extract_symbol!r}, globals(), locals())"
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if getattr(node, "type_comment", None):
+                skipped += 1
+                continue
+            statements: list[str] = []
+            for alias in node.names:
+                if alias.asname is None and "." in alias.name:
+                    binding = alias.name.split(".", 1)[0]
+                    fromlist: tuple[str, ...] = ()
+                elif alias.asname is not None and "." in alias.name:
+                    binding = alias.asname
+                    fromlist = (alias.name.rsplit(".", 1)[1],)
+                else:
+                    binding = alias.asname or alias.name
+                    fromlist = ()
+                statements.append(
+                    f"{binding} = {call_expression(alias.name, fromlist, '', 0, False)}"
+                )
+            start = _source_offset(source, node.lineno, node.col_offset)
+            end = _source_offset(source, node.end_lineno, node.end_col_offset)
+            edits.append((start, end, "; ".join(statements)))
+            changed += len(node.names)
+
+        elif isinstance(node, ast.ImportFrom):
+            if (
+                node.module == "__future__"
+                or len(node.names) != 1
+                or node.names[0].name == "*"
+                or getattr(node, "type_comment", None)
+            ):
+                skipped += 1
+                continue
+            alias = node.names[0]
+            binding = alias.asname or alias.name
+            call = call_expression(
+                node.module or "",
+                (alias.name,),
+                alias.name,
+                node.level,
+                True,
+            )
+            start = _source_offset(source, node.lineno, node.col_offset)
+            end = _source_offset(source, node.end_lineno, node.end_col_offset)
+            edits.append((start, end, f"{binding} = {call}"))
+            changed += 1
+
+    if not edits:
+        return source, 0, skipped
+
+    rewritten = source
+    for start, end, replacement in sorted(edits, reverse=True):
+        rewritten = rewritten[:start] + replacement + rewritten[end:]
+
+    helper_lines = [
+        f"def {helper_name}(n, f, v, level, extract, g, l, _b=__builtins__, _c=chr, _t=tuple, _y=type):",
+        "    builtins = _b if _y(_b) is _y({}) else _b.__dict__",
+        "    importer = builtins[''.join(_c(value) for value in (95, 95, 105, 109, 112, 111, 114, 116, 95, 95))]",
+        "    attribute = builtins[''.join(_c(value) for value in (103, 101, 116, 97, 116, 116, 114))]",
+        "    decode = lambda parts: ''.join(''.join(_c(value ^ key) for value in chunk) for chunk, key in parts)",
+        "    name = decode(n)",
+        "    fromlist = _t(decode(item) for item in f)",
+        "    module = importer(name, g, l, fromlist, level)",
+        "    if extract:",
+        "        return attribute(module, decode(v))",
+        "    return module",
+    ]
+    insertion_line = _module_header_insert_line(tree, source)
+    lines = rewritten.split("\n")
+    rewritten = "\n".join(
+        lines[:insertion_line] + helper_lines + lines[insertion_line:]
+    )
+    compile(rewritten, "<runtime-import-obfuscation>", "exec")
+    return rewritten, changed, skipped

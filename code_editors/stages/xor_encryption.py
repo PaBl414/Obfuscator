@@ -79,9 +79,19 @@ def find_insert_line(tree, source):
     return insert
 
 
-def transform_source(source: str, key: bytes):
+def transform_source(
+    source: str,
+    key: bytes,
+    decoder_names: tuple[str, str] = ("_d", "_db"),
+):
     if not key:
         raise ValueError("The master key must not be empty.")
+    text_decoder, bytes_decoder = decoder_names
+    if (
+        len(set(decoder_names)) != 2
+        or any(not name.isidentifier() for name in decoder_names)
+    ):
+        raise ValueError("Decoder names must be valid Python identifiers.")
     tree = ast.parse(source)
     skip = collect_skip_ids(tree)
     key_rng = random.Random(int.from_bytes(key, "big"))
@@ -111,11 +121,17 @@ def transform_source(source: str, key: bytes):
             if isinstance(node.value, str):
                 literal_key = new_literal_key()
                 enc = xor_bytes(node.value.encode('utf-8'), literal_key).hex()
-                repl = f"_d('{enc}', '{literal_key.hex()}')".encode('utf-8')
+                repl = (
+                    f"{text_decoder}('{enc}', '{literal_key.hex()}')"
+                    .encode('utf-8')
+                )
             elif isinstance(node.value, bytes):
                 literal_key = new_literal_key()
                 enc = xor_bytes(node.value, literal_key).hex()
-                repl = f"_db('{enc}', '{literal_key.hex()}')".encode('utf-8')
+                repl = (
+                    f"{bytes_decoder}('{enc}', '{literal_key.hex()}')"
+                    .encode('utf-8')
+                )
             else:
                 for c in ast.iter_child_nodes(node): visit(c)
                 return
@@ -134,14 +150,23 @@ def transform_source(source: str, key: bytes):
     return out.decode('utf-8'), tree
 
 
-def build_decryptor(key: bytes | None = None):
+def build_decryptor(
+    key: bytes | None = None,
+    decoder_names: tuple[str, str] = ("_d", "_db"),
+):
     """Build runtime decoders; per-literal keys are stored beside each payload."""
+    text_decoder, bytes_decoder = decoder_names
+    if (
+        len(set(decoder_names)) != 2
+        or any(not name.isidentifier() for name in decoder_names)
+    ):
+        raise ValueError("Decoder names must be valid Python identifiers.")
     return [
-        "def _d(s, k):",
+        f"def {text_decoder}(s, k):",
         "    _k = bytes.fromhex(k)",
         "    _b = bytes.fromhex(s)",
         "    return bytes(c ^ _k[i % len(_k)] for i, c in enumerate(_b)).decode('utf-8')",
-        "def _db(s, k):",
+        f"def {bytes_decoder}(s, k):",
         "    _k = bytes.fromhex(k)",
         "    _b = bytes.fromhex(s)",
         "    return bytes(c ^ _k[i % len(_k)] for i, c in enumerate(_b))",

@@ -21,7 +21,7 @@ class UnsafeToTransform(Exception):
 
 
 _DYNAMIC_NAMES = {
-    "globals", "locals", "vars", "dir", "eval", "exec", "compile",
+    "vars", "dir", "eval", "exec", "compile",
     "__import__", "getattr", "setattr", "delattr",
 }
 
@@ -29,7 +29,6 @@ _FRAME_ATTRIBUTES = {
     "_getframe", "_current_frames", "currentframe", "settrace", "gettrace",
     "setprofile", "getprofile", "f_back", "f_code", "f_globals",
     "f_locals", "f_lineno", "f_lasti", "tb_frame", "tb_next",
-    "__dict__", "globals", "locals",
 }
 
 
@@ -51,7 +50,7 @@ class SafetyVisitor(ast.NodeVisitor):
                 "dynamic namespace access or dynamic code execution: "
                 + node.id
             )
-        elif node.id in {"__all__", "__builtins__"}:
+        elif node.id in {"__all__"}:
             self.reasons.append("direct access to " + node.id)
         elif node.id in {
             "__file__", "__cached__", "__spec__", "__loader__", "__package__"
