@@ -1,0 +1,111 @@
+"""Execution engine for ordered, repeatable source transformations."""
+
+from __future__ import annotations
+
+import ast
+from collections import Counter
+
+from .configuration import PipelineConfig
+from .context import ProgressCallback, SeedAllocator, StageContext
+from .registry import STAGE_REGISTRY
+from ..stages.name_mangler import ModuleDefinitions
+
+
+def reflective_members(source: str) -> set[str]:
+    tree = ast.parse(source)
+    definitions = ModuleDefinitions()
+    definitions.visit(tree)
+    return definitions.attribute_names & {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+
+
+def transform(
+    source: str,
+    config: PipelineConfig,
+    *,
+    protected_names: set[str] | None = None,
+    attribute_mapping: dict[str, str] | None = None,
+    shared_name_mapping: dict[str, str] | None = None,
+    progress: ProgressCallback | None = None,
+    progress_label: str | None = None,
+    layer_number: int = 1,
+    layer_count: int = 1,
+    seed_allocator: SeedAllocator | None = None,
+) -> tuple[str, list[str]]:
+    """Apply one configured stage sequence to Python source."""
+    allocator = seed_allocator or SeedAllocator(config.seed)
+    context = StageContext(
+        stage_seed=0,
+        junk_count=config.junk_count,
+        name_length=config.name_length,
+        protected_names=(protected_names or set()) | reflective_members(source),
+        attribute_mapping=attribute_mapping,
+        shared_name_mapping=shared_name_mapping,
+        import_mode=config.import_mode,
+        literal_mode=config.literal_mode,
+        dispatch_mode=config.dispatch_mode,
+        allow_introspection=config.allow_introspection,
+        extended_flow=config.extended_flow,
+    )
+    report: list[str] = []
+    totals = Counter(config.stage_order)
+    seen: Counter[str] = Counter()
+
+    for index, stage_id in enumerate(config.stage_order, start=1):
+        seen[stage_id] += 1
+        stage_seed = allocator.next_seed()
+        context.stage_seed = stage_seed
+        context.current_stage_occurrence = seen[stage_id]
+        prefix = f"{progress_label} | " if progress_label else ""
+        prefix += (
+            f"Layer {layer_number}/{layer_count} | "
+            f"Stage {index}/{len(config.stage_order)}: {stage_id} "
+            f"({seen[stage_id]}/{totals[stage_id]}) seed={stage_seed}"
+        )
+        if progress is not None:
+            progress(f"{prefix} — started")
+        try:
+            source, description = STAGE_REGISTRY[stage_id](source, context)
+        except Exception as exc:
+            if progress is not None:
+                progress(f"{prefix} — failed: {type(exc).__name__}: {exc}")
+            raise
+        report.append(f"{index}. {description} [seed={stage_seed}]")
+        if progress is not None:
+            progress(f"{prefix} — completed: {description}")
+    return source, report
+
+
+def transform_layers(
+    source: str,
+    config: PipelineConfig,
+    *,
+    protected_names: set[str] | None = None,
+    attribute_mapping: dict[str, str] | None = None,
+    shared_name_mapping: dict[str, str] | None = None,
+    progress: ProgressCallback | None = None,
+    progress_label: str | None = None,
+    seed_allocator: SeedAllocator | None = None,
+) -> tuple[str, list[str]]:
+    """Apply the complete sequence repeatedly, feeding each result forward."""
+    allocator = seed_allocator or SeedAllocator(config.seed)
+    report: list[str] = []
+    protected_names = (protected_names or set()) | reflective_members(source)
+    for layer_number in range(1, config.layers + 1):
+        source, stage_report = transform(
+            source,
+            config,
+            protected_names=protected_names,
+            attribute_mapping=attribute_mapping,
+            shared_name_mapping=shared_name_mapping,
+            progress=progress,
+            progress_label=progress_label,
+            layer_number=layer_number,
+            layer_count=config.layers,
+            seed_allocator=allocator,
+        )
+        report.append(f"Layer {layer_number}/{config.layers}")
+        report.extend(f"  {line}" for line in stage_report)
+    return source, report

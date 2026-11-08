@@ -15,28 +15,35 @@ import tokenize
 from pathlib import Path
 from typing import List, Optional, Sequence, Set, Tuple
 
+if __package__:
+    from .dispatch import table_dispatch
+else:
+    from dispatch import table_dispatch
+
 
 class UnsafeToTransform(Exception):
     """Raised when static checks find risky constructs."""
 
 
 _DYNAMIC_NAMES = {
-    "globals", "locals", "vars", "dir", "eval", "exec", "compile",
+    "vars", "locals", "globals", "dir", "eval", "exec", "compile",
     "__import__", "getattr", "setattr", "delattr",
 }
+
+_NAMESPACE_READERS = {"locals", "globals", "vars", "dir"}
 
 _FRAME_ATTRIBUTES = {
     "_getframe", "_current_frames", "currentframe", "settrace", "gettrace",
     "setprofile", "getprofile", "f_back", "f_code", "f_globals",
     "f_locals", "f_lineno", "f_lasti", "tb_frame", "tb_next",
-    "__dict__", "globals", "locals",
 }
 
 
 class SafetyVisitor(ast.NodeVisitor):
 
-    def __init__(self, tree: ast.Module) -> None:
+    def __init__(self, tree: ast.Module, allow_introspection: bool = False) -> None:
         self.reasons: List[str] = []
+        self.dynamic_names = _DYNAMIC_NAMES - _NAMESPACE_READERS if allow_introspection else _DYNAMIC_NAMES
         self.sys_aliases = {"sys"}
 
         for item in ast.walk(tree):
@@ -46,12 +53,12 @@ class SafetyVisitor(ast.NodeVisitor):
                         self.sys_aliases.add(alias.asname or "sys")
 
     def visit_Name(self, node: ast.Name) -> None:
-        if node.id in _DYNAMIC_NAMES:
+        if node.id in self.dynamic_names:
             self.reasons.append(
                 "dynamic namespace access or dynamic code execution: "
                 + node.id
             )
-        elif node.id in {"__all__", "__builtins__"}:
+        elif node.id in {"__all__"}:
             self.reasons.append("direct access to " + node.id)
         elif node.id in {
             "__file__", "__cached__", "__spec__", "__loader__", "__package__"
@@ -92,7 +99,7 @@ class SafetyVisitor(ast.NodeVisitor):
 
         for alias in node.names:
             if (
-                alias.name in _DYNAMIC_NAMES
+                alias.name in self.dynamic_names
                 or alias.name in _FRAME_ATTRIBUTES
                 or (
                     node.module == "sys"
@@ -164,8 +171,8 @@ def _new_state_name(
             return candidate
 
 
-def _check_safety(tree: ast.Module) -> None:
-    visitor = SafetyVisitor(tree)
+def _check_safety(tree: ast.Module, allow_introspection: bool = False) -> None:
+    visitor = SafetyVisitor(tree, allow_introspection=allow_introspection)
     visitor.visit(tree)
 
     if visitor.reasons:
@@ -215,15 +222,20 @@ def _validate_state_machine(
         raise ValueError("Invalid state-machine transition.")
 
 
-def obfuscate(source: str, seed: Optional[int] = None) -> str:
+def obfuscate(
+    source: str, seed: Optional[int] = None, dispatch_mode: str = "branches",
+    allow_introspection: bool = False,
+) -> str:
 
+    if dispatch_mode not in {"branches", "table"}:
+        raise ValueError("Unknown dispatch mode")
     tree = ast.parse(source, type_comments=True)
     header, body = _module_header(list(tree.body))
 
     if not body:
         return source if source.endswith("\n") else source + "\n"
 
-    _check_safety(tree)
+    _check_safety(tree, allow_introspection=allow_introspection)
 
     rng = random.Random(seed)
     identifiers = _source_identifiers(source)
@@ -295,6 +307,15 @@ def obfuscate(source: str, seed: Optional[int] = None) -> str:
     lines.append(f"del {state_var}")
 
     result = "\n".join(lines) + "\n"
+
+    if dispatch_mode == "table":
+        result_tree = ast.parse(result)
+        loop = next(node for node in result_tree.body if isinstance(node, ast.While))
+        loop.body[0] = table_dispatch(
+            loop.body[0], state_var, [state_ids[index] for index in dispatch_order], rng
+        )
+        ast.fix_missing_locations(result_tree)
+        result = ast.unparse(result_tree) + "\n"
 
     compile(result, "<obfuscated>", "exec")
 

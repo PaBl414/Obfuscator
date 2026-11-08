@@ -97,8 +97,6 @@ def inject_junk(source: str, count: int = 8, seed: int | None = None) -> tuple[s
     tree = ast.parse(source)
     body = list(tree.body)
     header_end = _module_header_end(body)
-    if header_end >= len(body):
-        raise ValueError("No module statements are available between which blocks can be inserted.")
 
     # Insert at safe module-suite boundaries, never inside a function, class,
     # conditional, loop, try block, or with block.
@@ -116,7 +114,9 @@ def inject_junk(source: str, count: int = 8, seed: int | None = None) -> tuple[s
         after = line_starts[end_line] if end_line < len(line_starts) else len(source)
         offsets.append(after)
     if not offsets:
-        raise ValueError("Nie znaleziono bezpiecznego miejsca wstawienia")
+        # Empty modules and modules containing only a docstring/future imports
+        # have one safe boundary: the end of the module header.
+        offsets.append(len(source))
 
     newline = "\r\n" if "\r\n" in source else "\n"
     rng = random.Random(seed)

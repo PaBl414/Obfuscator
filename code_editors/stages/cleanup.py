@@ -40,6 +40,7 @@ _COMPOUND_STARTERS = frozenset({
 })
 
 _FSTRING_START = getattr(tokenize, 'FSTRING_START', None)
+_FSTRING_MIDDLE = getattr(tokenize, 'FSTRING_MIDDLE', None)
 _DOC_OWNERS = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
@@ -138,7 +139,13 @@ def _minify_tokens(source: str, indent_width: int, use_semicolons: bool) -> str:
         elif prev_str is not None and _needs_space(prev_type, prev_str, t.type, t.string):
             out.append(' ')
 
-        out.append(t.string)
+        if _FSTRING_MIDDLE is not None and t.type == _FSTRING_MIDDLE:
+            # Python 3.12 tokenization removes one level of doubled braces from
+            # literal f-string text. Restore the source escaping before joining
+            # tokens, or CSS/JSON braces become Python format expressions.
+            out.append(t.string.replace('{', '{{').replace('}', '}}'))
+        else:
+            out.append(t.string)
         prev_type, prev_str = t.type, t.string
 
     result = ''.join(out)

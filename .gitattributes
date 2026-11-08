@@ -1,0 +1,11 @@
+* text=auto
+*.py text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+MANIFEST.in text eol=lf
+LICENSE text eol=lf

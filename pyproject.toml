@@ -3,16 +3,34 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "code-editors"
-version = "1.0.0"
-description = "A modular Python source transformation pipeline"
+name = "obfuscator-edu"
+version = "2.0.0"
+description = "A deterministic, extensible Python source obfuscation pipeline"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = []
+keywords = ["python", "obfuscation", "ast", "source-transformation", "education"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+]
+
+[project.optional-dependencies]
+native = ["Nuitka"]
 
 [project.scripts]
-code-editors = "code_editors.pipeline:main"
+obfuscator-edu = "code_editors.cli:main"
+code-editors = "code_editors.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["code_editors*"]
@@ -20,3 +38,10 @@ include = ["code_editors*"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

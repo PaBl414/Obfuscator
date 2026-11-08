@@ -55,6 +55,36 @@ def classify(value):
                 _execute(transformed, "classify", value),
             )
 
+    def test_flattens_nested_if_branches_with_same_side_effect_order(self) -> None:
+        source = '''\
+def classify(value, events):
+    result = 0
+    if value < 0:
+        events.append("negative")
+        if value < -5:
+            result = 1
+        else:
+            result = 2
+    elif value == 0:
+        events.append("zero")
+        result = 3
+    else:
+        events.append("positive")
+        result = 4
+    return result
+'''
+        transformed, count = flatten_simple_functions(source, seed=31)
+        self.assertEqual(count, 1)
+        for value in (-10, -3, 0, 9):
+            original_events: list[str] = []
+            transformed_events: list[str] = []
+            original_result = _execute(source, "classify", value, original_events)
+            transformed_result = _execute(
+                transformed, "classify", value, transformed_events
+            )
+            self.assertEqual(original_result, transformed_result)
+            self.assertEqual(original_events, transformed_events)
+
     def test_flattens_with_statement_and_nested_function(self) -> None:
         source = '''\
 from contextlib import nullcontext

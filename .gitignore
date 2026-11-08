@@ -1,0 +1,55 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging output
+build/
+dist/
+*.egg-info/
+
+# Test and analysis caches
+.coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.tox/
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Generated example output
+*_edited.py
+*_processed/
+
+# Local input projects, scratch examples and generated output from development
+/Test/
+/Password-Generator/
+/niga*/
+/cube_roll.py
+/b.py
+/*_obfuscated/
+/.verification-*/
+
+# Local reports can contain original symbols, paths and verification input
+/*.report.json
+/report.json
+/raport*.json
+
+# Local credentials and transient files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.log
+*.tmp

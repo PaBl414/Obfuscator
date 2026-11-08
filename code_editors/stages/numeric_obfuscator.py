@@ -4,16 +4,7 @@ from __future__ import annotations
 
 import ast
 import random
-
-
-def _offset(source: str, line_number: int, byte_column: int) -> int:
-    lines = source.splitlines(keepends=True)
-    line_start = sum(len(line) for line in lines[: line_number - 1])
-    line = lines[line_number - 1]
-    character_column = len(
-        line.encode("utf-8")[:byte_column].decode("utf-8", errors="ignore")
-    )
-    return line_start + character_column
+from .source_edits import SourceIndex, apply_edits
 
 
 def _annotation_nodes(tree: ast.Module) -> set[int]:
@@ -44,6 +35,7 @@ def obfuscate_numeric_constants(
 ) -> tuple[str, int]:
     """Change integer spellings while preserving the parsed syntax tree."""
     tree = ast.parse(source, type_comments=True)
+    index = SourceIndex(source)
     annotation_nodes = _annotation_nodes(tree)
 
     rng = random.Random(seed)
@@ -59,13 +51,11 @@ def obfuscate_numeric_constants(
 
         representations = (hex(node.value), oct(node.value), bin(node.value))
         replacement = rng.choice(representations)
-        start = _offset(source, node.lineno, node.col_offset)
-        end = _offset(source, node.end_lineno, node.end_col_offset)
+        start = index.offset(node.lineno, node.col_offset)
+        end = index.offset(node.end_lineno, node.end_col_offset)
         edits.append((start, end, replacement))
 
-    rewritten = source
-    for start, end, replacement in sorted(edits, reverse=True):
-        rewritten = rewritten[:start] + replacement + rewritten[end:]
+    rewritten = apply_edits(source, edits)
 
     transformed_tree = ast.parse(rewritten, type_comments=True)
     if ast.dump(tree, include_attributes=False) != ast.dump(

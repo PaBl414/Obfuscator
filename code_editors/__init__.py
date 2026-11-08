@@ -1,3 +1,13 @@
-"""Source code transformation tools."""
+"""ObfuscatorEdu public package interface."""
 
-__version__ = "1.0.0"
+from .core import PipelineConfig, process_file, process_folder, transform, transform_layers
+
+__version__ = "2.0.0"
+
+__all__ = [
+    "PipelineConfig",
+    "process_file",
+    "process_folder",
+    "transform",
+    "transform_layers",
+]

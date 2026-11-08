@@ -49,6 +49,7 @@ class ModuleDefinitions(ast.NodeVisitor):
 
     def __init__(self) -> None:
         self.names: set[str] = set()
+        self.attribute_names: set[str] = set()
         self.protected: set[str] = set()
         self._module_level = True
         self._in_class_body = False
@@ -56,6 +57,8 @@ class ModuleDefinitions(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if self._module_level:
             self.names.add(node.name)
+        elif self._in_class_body:
+            self.attribute_names.add(node.name)
         for dec in node.decorator_list:
             self.visit(dec)
         self.visit(node.args)
@@ -92,8 +95,11 @@ class ModuleDefinitions(ast.NodeVisitor):
                 self.protected.add(alias.asname or alias.name)
 
     def visit_Name(self, node: ast.Name) -> None:
-        if not self._in_class_body and isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.names.add(node.id)
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            if self._in_class_body:
+                self.attribute_names.add(node.id)
+            else:
+                self.names.add(node.id)
 
     def visit_arg(self, node: ast.arg) -> None:
         self.names.add(node.arg)
@@ -137,10 +143,13 @@ def collect_candidates(files: list[Path]) -> set[str]:
     }
 
 
-def make_mapping(names: set[str], length: int, rng: random.Random) -> dict[str, str]:
+def make_mapping(
+    names: set[str], length: int, rng: random.Random,
+    reserved: set[str] | None = None,
+) -> dict[str, str]:
     alphabet = string.ascii_letters + string.digits
     start = string.ascii_letters
-    used = set(BUILTIN_NAMES) | names
+    used = set(BUILTIN_NAMES) | names | (reserved or set())
     mapping: dict[str, str] = {}
     for old in sorted(names):
         for _ in range(10_000):
@@ -157,7 +166,13 @@ def ast_byte_column_to_char(line: str, byte_column: int) -> int:
     return len(line.encode("utf-8")[:byte_column].decode("utf-8", errors="ignore"))
 
 
-def python_edits(source: str, mapping: dict[str, str]) -> list[tuple[int, int, str]]:
+def python_edits(
+    source: str,
+    mapping: dict[str, str],
+    attribute_mapping: dict[str, str] | None = None,
+    keyword_names: set[str] | None = None,
+    internal_callable_names: set[str] | None = None,
+) -> list[tuple[int, int, str]]:
     """Return character-offset edits for mapped identifiers in Python syntax."""
     tree = ast.parse(source)
     lines = source.splitlines(keepends=True)
@@ -168,6 +183,62 @@ def python_edits(source: str, mapping: dict[str, str]) -> list[tuple[int, int, s
         cursor += len(line)
 
     wanted: set[tuple[int, int, str]] = set()
+    class_field_targets: set[tuple[int, int, str]] = set()
+    class_method_targets: set[tuple[int, int, str]] = set()
+    class_methods = {
+        child
+        for parent in ast.walk(tree)
+        if isinstance(parent, ast.ClassDef)
+        for child in parent.body
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    class_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+    local_classes = {node.name for node in class_nodes}
+    external_self_attributes: set[tuple[int, int, str]] = set()
+    for class_node in class_nodes:
+        external_base = any(
+            not isinstance(base, ast.Name) or base.id not in local_classes
+            for base in class_node.bases
+        )
+        if not external_base:
+            continue
+        instance_names = {
+            method.args.args[0].arg
+            for method in class_node.body
+            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and method.args.args
+            and not any(
+                isinstance(decorator, ast.Name) and decorator.id == "staticmethod"
+                for decorator in method.decorator_list
+            )
+        }
+        declared: set[str] = set()
+        nodes = list(ast.walk(class_node))
+        for child_class in class_nodes:
+            if child_class is not class_node and child_class in nodes:
+                nodes = [node for node in nodes if node is not child_class]
+        for child in nodes:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child is not class_node:
+                if child in class_node.body:
+                    declared.add(child.name)
+            if isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Store):
+                if isinstance(child.value, ast.Name) and child.value.id in instance_names:
+                    declared.add(child.attr)
+        for child in nodes:
+            if (
+                isinstance(child, ast.Attribute)
+                and child.attr in (attribute_mapping or {})
+                and isinstance(child.value, ast.Name)
+                and child.value.id in instance_names
+                and child.attr not in declared
+            ):
+                line = lines[child.end_lineno - 1]
+                start_byte = child.end_col_offset - len(child.attr.encode("utf-8"))
+                start_col = ast_byte_column_to_char(line, start_byte)
+                external_self_attributes.add(
+                    (child.end_lineno - 1, start_col, child.attr)
+                )
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in mapping:
             char_col = ast_byte_column_to_char(lines[node.lineno - 1], node.col_offset)
@@ -175,24 +246,103 @@ def python_edits(source: str, mapping: dict[str, str]) -> list[tuple[int, int, s
         elif isinstance(node, ast.arg) and node.arg in mapping:
             char_col = ast_byte_column_to_char(lines[node.lineno - 1], node.col_offset)
             wanted.add((node.lineno - 1, char_col, node.arg))
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in mapping:
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            # Declaration names are strings in the AST, not Name nodes. Keep
+            # them aligned with renamed bindings, including continued lines.
+            start = (node.lineno, ast_byte_column_to_char(
+                lines[node.lineno - 1], node.col_offset
+            ))
+            end = (node.end_lineno, ast_byte_column_to_char(
+                lines[node.end_lineno - 1], node.end_col_offset
+            ))
+            for tok in tokens:
+                if (start < tok.start < end and tok.type == tokenize.NAME
+                        and tok.string in node.names and tok.string in mapping):
+                    wanted.add((tok.start[0] - 1, tok.start[1], tok.string))
+        elif (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and (
+                node.name in mapping
+                or (node in class_methods and node.name in (attribute_mapping or {}))
+            )
+        ):
             # Find the definition token after the def/class keyword.
-            for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            for tok in tokens:
                 if tok.start[0] < node.lineno or tok.start[0] > node.lineno + 1:
                     continue
                 if tok.type == tokenize.NAME and tok.string == node.name:
-                    wanted.add((tok.start[0] - 1, tok.start[1], node.name))
+                    key = (tok.start[0] - 1, tok.start[1], node.name)
+                    wanted.add(key)
+                    if node in class_methods:
+                        class_method_targets.add(key)
                     break
+        elif isinstance(node, ast.Attribute) and node.attr in (attribute_mapping or {}):
+            line = lines[node.end_lineno - 1]
+            end_byte = node.end_col_offset
+            start_byte = end_byte - len(node.attr.encode("utf-8"))
+            start_col = ast_byte_column_to_char(line, start_byte)
+            key = (node.end_lineno - 1, start_col, node.attr)
+            if key not in external_self_attributes:
+                wanted.add(key)
+
+    if keyword_names and internal_callable_names:
+        from .scopes import project_calls
+        for call in project_calls(tree, internal_callable_names):
+            if isinstance(call.func, ast.Name):
+                callable_name = call.func.id
+            elif isinstance(call.func, ast.Attribute):
+                callable_name = call.func.attr
+            else:
+                continue
+            if callable_name not in internal_callable_names:
+                continue
+            for argument in call.keywords:
+                if argument.arg in mapping and argument.arg in keyword_names:
+                    char_col = ast_byte_column_to_char(
+                        lines[argument.lineno - 1], argument.col_offset
+                    )
+                    wanted.add((argument.lineno - 1, char_col, argument.arg))
+
+    # Class fields are represented by Name nodes, whereas uses are Attribute
+    # nodes. Rename only bindings in a class body, not unrelated local names.
+    if attribute_mapping:
+        for class_node in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
+            for statement in class_node.body:
+                targets: list[ast.expr] = []
+                if isinstance(statement, ast.AnnAssign):
+                    targets.append(statement.target)
+                elif isinstance(statement, (ast.Assign, ast.AugAssign)):
+                    targets.extend(
+                        statement.targets if isinstance(statement, ast.Assign)
+                        else [statement.target]
+                    )
+                for target in targets:
+                    for field in ast.walk(target):
+                        if isinstance(field, ast.Name) and (
+                            field.id in mapping or field.id in attribute_mapping
+                        ):
+                            char_col = ast_byte_column_to_char(
+                                lines[field.lineno - 1], field.col_offset
+                            )
+                            key = (field.lineno - 1, char_col, field.id)
+                            class_field_targets.add(key)
+                            if field.id in attribute_mapping:
+                                wanted.add(key)
 
     edits: list[tuple[int, int, str]] = []
-    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+    for tok in tokens:
         if tok.type != tokenize.NAME:
             continue
         key = (tok.start[0] - 1, tok.start[1], tok.string)
         if key not in wanted:
             continue
         start = line_starts[key[0]] + key[1]
-        edits.append((start, start + len(tok.string), mapping[tok.string]))
+        if key in class_field_targets or key in class_method_targets:
+            replacement = (attribute_mapping or {}).get(tok.string)
+        else:
+            replacement = mapping.get(tok.string) or (attribute_mapping or {}).get(tok.string)
+        if replacement is not None:
+            edits.append((start, start + len(tok.string), replacement))
     return edits
 
 
@@ -202,9 +352,16 @@ def apply_edits(source: str, edits: list[tuple[int, int, str]]) -> str:
     return source
 
 
-def rewrite_python(path: Path, mapping: dict[str, str], write: bool) -> bool:
+def rewrite_python(
+    path: Path,
+    mapping: dict[str, str],
+    write: bool,
+    attribute_mapping: dict[str, str] | None = None,
+) -> bool:
     source = path.read_text(encoding="utf-8")
-    rewritten = apply_edits(source, python_edits(source, mapping))
+    rewritten = apply_edits(
+        source, python_edits(source, mapping, attribute_mapping)
+    )
     if rewritten == source:
         return False
     ast.parse(rewritten, filename=str(path))
@@ -223,15 +380,41 @@ def class_and_function_names(files: list[Path]) -> set[str]:
     return names
 
 
+def collect_class_attribute_names(
+    files: list[Path], protected_names: set[str] | None = None
+) -> set[str]:
+    """Collect safely renameable class fields across a project.
+
+    Fields used as keyword arguments are part of a call-site contract and must
+    retain their spelling unless the caller can be resolved unambiguously.
+    """
+    names: set[str] = set()
+    for path in files:
+        tree = ast.parse(path.read_bytes(), filename=str(path))
+        visitor = ModuleDefinitions()
+        visitor.visit(tree)
+        names.update(visitor.attribute_names)
+    return {
+        name for name in names
+        if name.isidentifier()
+        and name not in (protected_names or set())
+        and name not in BUILTIN_NAMES
+        and not (name.startswith("__") and name.endswith("__"))
+    }
+
+
 def rewrite_text_files(root: Path, mapping: dict[str, str], non_python_names: set[str],
                        python_paths: set[Path], write: bool) -> list[Path]:
     """Replace standalone function/class names in common text formats."""
     changed: list[Path] = []
     # Names of functions/classes only, as requested for references outside Python.
-    replacements = {name: value for name, value in mapping.items() if name in non_python_names}
+    replacements = {
+        name: value for name, value in mapping.items() if name in non_python_names
+    }
     if not replacements:
         return changed
-    pattern = re.compile(r"\b(" + "|".join(map(re.escape, sorted(replacements, key=len, reverse=True))) + r")\b")
+    names = sorted(replacements, key=len, reverse=True)
+    pattern = re.compile(r"\b(" + "|".join(map(re.escape, names)) + r")\b")
     for path in all_files(root):
         if path in python_paths or path.suffix.lower() not in TEXT_EXTENSIONS:
             continue
@@ -258,32 +441,58 @@ def run_file(path: Path, length: int, rng: random.Random, write: bool) -> dict[s
         and not (name.startswith("__") and name.endswith("__"))
     }
     mapping = make_mapping(candidates, length, rng)
-    rewrite_python(path, mapping, write)
-    return mapping
+    attributes = {
+        name for name in visitor.attribute_names
+        if name not in BUILTIN_NAMES
+        and not (name.startswith("__") and name.endswith("__"))
+    }
+    attribute_mapping = make_mapping(
+        attributes, length, rng, reserved=set(mapping.values())
+    )
+    rewrite_python(path, mapping, write, attribute_mapping)
+    return mapping | attribute_mapping
 
 
 def run_directory(root: Path, length: int, rng: random.Random, write: bool) -> dict[str, str]:
     files = python_files(root)
     non_python_names = class_and_function_names(files)
     mapping = make_mapping(collect_candidates(files), length, rng)
+    protected_names: set[str] = set()
     for path in files:
-        rewrite_python(path, mapping, write)
+        tree = ast.parse(path.read_bytes(), filename=str(path))
+        protected_names.update(
+            node.arg
+            for node in ast.walk(tree)
+            if isinstance(node, ast.keyword) and node.arg is not None
+        )
+    attribute_mapping = make_mapping(
+        collect_class_attribute_names(files, protected_names), length, rng,
+        reserved=set(mapping.values()),
+    )
+    for path in files:
+        rewrite_python(path, mapping, write, attribute_mapping)
     if write:
         changed_text = rewrite_text_files(root, mapping, non_python_names, set(files), write=True)
     else:
         changed_text = rewrite_text_files(root, mapping, non_python_names, set(files), write=False)
     print(f"Non-Python text files with changed tokens: {len(changed_text)}")
-    return mapping
+    return mapping | attribute_mapping
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Obfuscate identifiers in Python source code.")
+    parser = argparse.ArgumentParser(
+        description="Obfuscate identifiers in Python source code."
+    )
     parser.add_argument("mode", choices=("file", "dir"), help="operation mode")
     parser.add_argument("path", type=Path, help=".py file or directory")
     parser.add_argument("--length", type=int, choices=range(4, 7), default=5,
                         help="generated identifier length: 4–6 (default: 5)")
     parser.add_argument("--seed", type=int, help="seed for reproducible mappings")
-    parser.add_argument("--dry-run", action="store_true", help="show the mapping without writing changes")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show the mapping without writing changes",
+    )
     args = parser.parse_args(argv)
     target = args.path.resolve()
     if args.mode == "file" and (not target.is_file() or target.suffix.lower() != ".py"):
@@ -298,7 +507,8 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, SyntaxError, ValueError, tokenize.TokenError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
-    print(f"Mode: {args.mode}; mappings: {len(mapping)}" + (" (no changes written)" if args.dry_run else ""))
+    suffix = " (no changes written)" if args.dry_run else ""
+    print(f"Mode: {args.mode}; mappings: {len(mapping)}{suffix}")
     for old, new in sorted(mapping.items()):
         print(f"{old} -> {new}")
     return 0

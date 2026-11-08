@@ -1,0 +1,84 @@
+ .editorconfig                                      |  15 [32m+[m
+ .gitattributes                                     |  11 [32m+[m
+ .github/workflows/tests.yml                        |  19 [32m+[m
+ .gitignore                                         |  55 [32m++[m
+ CHANGELOG.md                                       |  46 [32m+[m
+ CONTRIBUTING.md                                    |  42 [32m+[m[31m-[m
+ MANIFEST.in                                        |   7 [32m+[m
+ README.md                                          | 405 [32m+++++++[m[31m--[m
+ build/lib/code_editors/__init__.py                 |   3 [31m-[m
+ build/lib/code_editors/pipeline.py                 | 343 [31m-------[m
+ build/lib/code_editors/stages/__init__.py          |   1 [31m-[m
+ build/lib/code_editors/stages/cleanup.py           | 201 [31m-----[m
+ build/lib/code_editors/stages/flattener.py         | 151 [31m----[m
+ build/lib/code_editors/stages/flow_obfuscator.py   | 488 [31m----------[m
+ build/lib/code_editors/stages/function_flow.py     | 153 [31m----[m
+ build/lib/code_editors/stages/import_obfuscator.py |  68 [31m--[m
+ build/lib/code_editors/stages/junk_editor.py       | 181 [31m----[m
+ build/lib/code_editors/stages/name_mangler.py      | 308 [31m-------[m
+ .../lib/code_editors/stages/numeric_obfuscator.py  |  76 [31m--[m
+ build/lib/code_editors/stages/xor_encryption.py    | 186 [31m----[m
+ code_editors.egg-info/PKG-INFO                     | 117 [31m---[m
+ code_editors.egg-info/SOURCES.txt                  |  23 [31m-[m
+ code_editors.egg-info/dependency_links.txt         |   1 [31m-[m
+ code_editors.egg-info/entry_points.txt             |   2 [31m-[m
+ code_editors.egg-info/top_level.txt                |   1 [31m-[m
+ code_editors/__init__.py                           |  14 [32m+[m[31m-[m
+ code_editors/__main__.py                           |   5 [32m+[m
+ code_editors/__pycache__/__init__.cpython-314.pyc  | Bin [31m222[m -> [32m0[m bytes
+ code_editors/__pycache__/pipeline.cpython-314.pyc  | Bin [31m19792[m -> [32m0[m bytes
+ code_editors/cli.py                                | 187 [32m++++[m
+ code_editors/core/__init__.py                      |  14 [32m+[m
+ code_editors/core/artifacts.py                     | 102 [32m+++[m
+ code_editors/core/configuration.py                 |  95 [32m++[m
+ code_editors/core/context.py                       |  51 [32m++[m
+ code_editors/core/engine.py                        | 111 [32m+++[m
+ code_editors/core/filesystem.py                    | 504 [32m+++++++++++[m
+ code_editors/core/project_layout.py                | 144 [32m+++[m
+ code_editors/core/registry.py                      | 286 [32m++++++[m
+ code_editors/pipeline.py                           | 400 [32m+++[m[31m------[m
+ .../stages/__pycache__/__init__.cpython-314.pyc    | Bin [31m228[m -> [32m0[m bytes
+ .../stages/__pycache__/cleanup.cpython-314.pyc     | Bin [31m10678[m -> [32m0[m bytes
+ .../stages/__pycache__/flattener.cpython-314.pyc   | Bin [31m12548[m -> [32m0[m bytes
+ .../__pycache__/flow_obfuscator.cpython-314.pyc    | Bin [31m22758[m -> [32m0[m bytes
+ .../__pycache__/function_flow.cpython-314.pyc      | Bin [31m11188[m -> [32m0[m bytes
+ .../__pycache__/import_obfuscator.cpython-314.pyc  | Bin [31m4509[m -> [32m0[m bytes
+ .../stages/__pycache__/junk_editor.cpython-314.pyc | Bin [31m11969[m -> [32m0[m bytes
+ .../__pycache__/name_mangler.cpython-314.pyc       | Bin [31m25870[m -> [32m0[m bytes
+ .../__pycache__/numeric_obfuscator.cpython-314.pyc | Bin [31m6550[m -> [32m0[m bytes
+ .../__pycache__/xor_encryption.cpython-314.pyc     | Bin [31m13370[m -> [32m0[m bytes
+ code_editors/stages/cleanup.py                     | 409 [32m++++[m[31m-----[m
+ code_editors/stages/dispatch.py                    |  46 [32m+[m
+ code_editors/stages/flattener.py                   | 380 [32m++++[m[31m----[m
+ code_editors/stages/flow_obfuscator.py             | 997 [32m+++++++++++[m[31m----------[m
+ code_editors/stages/function_flow.py               | 270 [32m+++++[m[31m-[m
+ code_editors/stages/import_obfuscator.py           | 238 [32m+++++[m
+ code_editors/stages/junk_editor.py                 | 362 [32m++++[m[31m----[m
+ code_editors/stages/name_mangler.py                | 826 [32m++++++++++[m[31m-------[m
+ code_editors/stages/numeric_obfuscator.py          |  20 [32m+[m[31m-[m
+ code_editors/stages/scopes.py                      | 132 [32m+++[m
+ code_editors/stages/source_edits.py                |  51 [32m++[m
+ code_editors/stages/xor_encryption.py              | 580 [32m++++++++[m[31m----[m
+ docs/architecture.md                               | 131 [32m+++[m
+ docs/validation.md                                 |  56 [32m++[m
+ pipeline.py                                        |   2 [32m+[m[31m-[m
+ pyproject.toml                                     |  33 [32m+[m[31m-[m
+ scripts/verify_example.py                          |  83 [32m++[m
+ scripts/verify_qt_example.py                       |  82 [32m++[m
+ .../__pycache__/test_function_flow.cpython-314.pyc | Bin [31m4520[m -> [32m0[m bytes
+ .../test_numeric_obfuscator.cpython-314.pyc        | Bin [31m2295[m -> [32m0[m bytes
+ tests/__pycache__/test_pipeline.cpython-314.pyc    | Bin [31m2949[m -> [32m0[m bytes
+ .../test_xor_encryption.cpython-314.pyc            | Bin [31m4306[m -> [32m0[m bytes
+ tests/test_advanced_obfuscation.py                 | 198 [32m++++[m
+ tests/test_cleanup.py                              |  25 [32m+[m
+ tests/test_core_api.py                             |  41 [32m+[m
+ tests/test_entrypoints.py                          |  56 [32m++[m
+ tests/test_function_flow.py                        |  30 [32m+[m
+ tests/test_generated_helper_names.py               |  69 [32m++[m
+ tests/test_introspection_mode.py                   |  59 [32m++[m
+ tests/test_layered_literals.py                     |  38 [32m+[m
+ tests/test_new_features.py                         | 315 [32m+++++++[m
+ tests/test_pipeline.py                             | 148 [32m++[m[31m-[m
+ tests/test_review_regressions.py                   | 221 [32m+++++[m
+ tests/test_source_edits.py                         |  35 [32m+[m
+ 83 files changed, 6496 insertions(+), 4253 deletions(-)
