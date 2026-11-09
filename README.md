@@ -1,5 +1,9 @@
 # ObfuscatorEdu
 
+ObfuscatorEdu is an educational Python obfuscator for learning about source
+transformations and analyzing their effects on program behavior. Use it only
+with code you own or are authorized to modify.
+
 ObfuscatorEdu is a standard-library-only Python source obfuscation pipeline. It
 combines literal encoding, identifier mangling, control-flow transformation,
 opaque predicates, junk insertion, import rewriting, and source compaction in
@@ -30,6 +34,173 @@ python -m code_editors --help
 Both launchers invoke `code_editors.cli.main` directly. The CLI validates
 configuration and calls the core engine; `code_editors.pipeline` exists only
 for compatibility with older Python API imports.
+
+## Linux: installation across distribution families
+
+The CLI works without a desktop, X11/Wayland or Tkinter when an input path is
+supplied. Use **Python 3.10 or newer** and a virtual environment. The same Python
+package and obfuscation stages are used on Linux and Windows; no distro-specific
+transformation mode is required.
+
+### 1. Install Python and Git
+
+Choose **one** block for your distribution. `PYTHON` selects the interpreter used
+to create the virtual environment in step 2. Check its version before proceeding;
+older distribution releases can ship Python versions below the project minimum.
+
+**Debian / Ubuntu / Linux Mint / Pop!_OS** (APT):
+
+```sh
+sudo apt update
+sudo apt install git python3 python3-venv python3-pip
+PYTHON=python3
+```
+
+For example, Ubuntu 22.04 or newer and Debian 12 or newer provide a sufficiently
+recent default Python. On older releases, select an independently installed
+Python 3.10+ instead of replacing the system interpreter.
+
+**Fedora** (DNF):
+
+```sh
+sudo dnf install git python3 python3-pip
+PYTHON=python3
+```
+
+**RHEL 9.4+ / compatible Rocky Linux 9 and AlmaLinux 9 releases** (DNF/AppStream):
+
+```sh
+sudo dnf install git python3.12 python3.12-pip
+PYTHON=python3.12
+```
+
+Select the versioned interpreter explicitly: RHEL 9's default `python3` can be
+Python 3.9, which is too old for this project. Package availability depends on
+the release and enabled repositories; RHEL requires the appropriate subscription
+repositories. Keep the vendor's system Python unchanged.
+
+**Arch Linux / EndeavourOS / Manjaro** (Pacman):
+
+```sh
+sudo pacman -Syu --needed git python python-pip
+PYTHON=python
+```
+
+**openSUSE Leap 16.x / Tumbleweed** (Zypper, Python 3.13 packages):
+
+```sh
+sudo zypper install git python313 python313-pip
+PYTHON=python3.13
+```
+
+For other SUSE releases, use the Python 3.10+ package suite supplied by your
+enabled repositories and select its matching interpreter in `PYTHON`.
+
+**Alpine Linux** (APK; run the package command as root, or use `sudo` if configured):
+
+```sh
+apk add git python3 py3-pip
+PYTHON=python3
+```
+
+### 2. Install the project in a virtual environment
+
+Run these commands as your normal user, in the same Bash/sh session as step 1:
+
+```sh
+"$PYTHON" --version
+git clone https://github.com/PaBl414/Obfuscator.git
+cd Obfuscator
+"$PYTHON" -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install .
+obfuscator-edu --help
+```
+
+If you already have a checkout, enter its directory and start at the `venv`
+command. Developers can substitute `python -m pip install -e .` for the regular
+installation. Dependencies and optional extras are declared in `pyproject.toml`;
+the core obfuscator has no third-party runtime requirements.
+
+Use the virtual environment when the distribution reports
+`externally-managed-environment`; installing with `sudo pip` or overriding system
+package protection is unnecessary. If Debian/Ubuntu reports missing `ensurepip`,
+install the `pythonX.Y-venv` package matching the selected interpreter.
+
+### 3. Obfuscate a file or project
+
+After activating the virtual environment:
+
+```sh
+# A single file; quote paths containing spaces.
+obfuscator-edu "./my project/app.py" -o ./app_obfuscated.py --all
+
+# A directory; the output must be outside the input and must not already exist.
+obfuscator-edu --folder ./my_project -o ./my_project_obfuscated \
+  --all --rename-modules --report ./my_project.report.json
+
+# Equivalent module entrypoint, including on headless systems.
+python -m code_editors --folder ./my_project -o ./another_output --all
+
+# Run the result if main.py is the application's entrypoint.
+python ./my_project_obfuscated/main.py
+```
+
+Linux paths are case-sensitive. Use `/` separators and Bash `\` line
+continuations rather than PowerShell backticks. Install the input application's
+own dependencies in the environment used to run its output; the obfuscator does
+not install or bundle them. Windows-specific application APIs still require
+porting in the original application.
+
+In a new terminal, return to the checkout and run `. .venv/bin/activate` before
+using the installed command. Alternatively, invoke `.venv/bin/obfuscator-edu`
+directly. Run `deactivate` when finished.
+
+### Optional graphical file/folder picker
+
+Omitting the input path opens a Tk dialog and therefore requires a desktop
+session and a Tk package matching the selected Python:
+
+| Family | Optional system package command |
+| --- | --- |
+| Debian / Ubuntu | `sudo apt install python3-tk` |
+| Fedora | `sudo dnf install python3-tkinter` |
+| RHEL 9, Python 3.12 | `sudo dnf install python3.12-tkinter` |
+| Arch family | `sudo pacman -S --needed tk` |
+| openSUSE, Python 3.13 | `sudo zypper install python313-tk` |
+| Alpine | `apk add python3-tkinter` (as root) |
+
+For a different Python version, choose its corresponding Tk package. Tkinter
+is supplied by the distribution, not installed with `pip install tkinter`.
+On SSH, servers, containers and WSL without a graphical session, pass the
+input path explicitly. If Tk or the display is unavailable, the CLI reports a
+short error with the command-line alternative.
+
+### Optional native compilation on Linux
+
+Inside the virtual environment, install the extra with
+`python -m pip install ".[native]"`. Nuitka also requires a compatible C compiler
+and development headers matching the selected Python; follow the
+[Nuitka compiler instructions](https://nuitka.net/user-documentation/user-manual.html).
+The regular source-obfuscation modes do not require a compiler. Build native
+modules for the target Python ABI, architecture and libc: Alpine/musl extensions
+are not interchangeable with glibc builds from other distributions.
+
+### Linux coverage and package references
+
+The repository's existing CI configuration runs the core suite on Ubuntu and
+Windows. The distribution instructions above describe installation paths, not
+certification of every distribution, release or architecture. See the
+[validation record](docs/validation.md) for executions actually recorded.
+
+Package references: [Debian](https://packages.debian.org/stable/python/python3-venv),
+[Ubuntu](https://packages.ubuntu.com/jammy-updates/python3-venv),
+[Fedora](https://packages.fedoraproject.org/),
+[RHEL](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html-single/installing_and_using_dynamic_programming_languages/index),
+[Arch](https://wiki.archlinux.org/title/Python),
+[openSUSE](https://doc.opensuse.org/release-notes/x86_64/openSUSE/Leap/16.1/html/release-notes-leap-161/),
+[Alpine](https://pkgs.alpinelinux.org/).
 
 ## Quick start
 

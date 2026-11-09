@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Documented Linux setup for APT, DNF, Pacman, Zypper and APK families, including
+  isolated installation, versioned interpreters, optional Tk and headless use.
+- Converted unavailable Tk/display errors into actionable CLI messages and
+  shared picker resource cleanup across file and folder selection.
+
 - Added polymorphic chained codecs and extended generator/coroutine dispatch;
   upgraded the `--all` preset to include both.
 - Added optional physical module/package relocation with an encoded importlib

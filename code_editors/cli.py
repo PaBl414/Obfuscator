@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 import tokenize
+from contextlib import contextmanager
 from pathlib import Path
 
 from .core.configuration import ALL_STAGE_ORDER, DEFAULT_STAGE_ORDER, PipelineConfig, validate_stage_order
@@ -12,42 +13,51 @@ from .core.filesystem import process_file, process_folder
 from .stages import flow_obfuscator
 
 
-def _choose_file() -> Path:
+@contextmanager
+def _picker_dialog():
+    """Open optional Tk dialogs and report unavailable desktop sessions clearly."""
     try:
         import tkinter as tk
         from tkinter import filedialog
     except ImportError as exc:
         raise RuntimeError(
-            "tkinter is unavailable; pass an input path on the command line"
+            "Tkinter is unavailable for this Python. Install your distribution's "
+            "Tk package, or pass a path: obfuscator-edu app.py / "
+            "obfuscator-edu --folder ./project"
         ) from exc
-    root = tk.Tk()
-    root.withdraw()
+    root = None
     try:
+        root = tk.Tk()
+        root.withdraw()
+        yield filedialog
+    except tk.TclError as exc:
+        raise RuntimeError(
+            "The graphical picker is unavailable (Tk/display). On a server, "
+            "SSH session or container, pass an input path: obfuscator-edu app.py "
+            "or obfuscator-edu --folder ./project"
+        ) from exc
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except tk.TclError:
+                pass
+
+
+def _choose_file() -> Path:
+    with _picker_dialog() as filedialog:
         selected = filedialog.askopenfilename(
             title="Select a Python script",
             filetypes=(("Python files", "*.py"), ("All files", "*.*")),
         )
-    finally:
-        root.destroy()
     if not selected:
         raise RuntimeError("No input file was selected")
     return Path(selected)
 
 
 def _choose_folder() -> Path:
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except ImportError as exc:
-        raise RuntimeError(
-            "tkinter is unavailable; pass an input path on the command line"
-        ) from exc
-    root = tk.Tk()
-    root.withdraw()
-    try:
+    with _picker_dialog() as filedialog:
         selected = filedialog.askdirectory(title="Select a folder to process")
-    finally:
-        root.destroy()
     if not selected:
         raise RuntimeError("No input folder was selected")
     return Path(selected)

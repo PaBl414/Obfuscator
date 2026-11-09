@@ -10,6 +10,20 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
+On Linux, install Python 3.10+ and its venv support using the distribution
+instructions in [README.md](README.md#linux-installation-across-distribution-families),
+then use Bash/sh:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+```
+
+Use the selected versioned Python command (for example `python3.12` on RHEL 9)
+instead of `python3` when the system default is older than the project minimum.
+Always pass an input path when running without a graphical desktop.
+
 ## Design rules
 
 - Keep transformations in `code_editors/stages/` independent from CLI and
