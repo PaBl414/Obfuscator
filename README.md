@@ -109,8 +109,8 @@ Run these commands as your normal user, in the same Bash/sh session as step 1:
 
 ```sh
 "$PYTHON" --version
-git clone https://github.com/PaBl414/Obfuscator.git
-cd Obfuscator
+git clone https://github.com/PaBl414/obfuscator-edu.git
+cd obfuscator-edu
 "$PYTHON" -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
