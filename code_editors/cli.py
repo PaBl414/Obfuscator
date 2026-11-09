@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .core.configuration import ALL_STAGE_ORDER, DEFAULT_STAGE_ORDER, PipelineConfig, validate_stage_order
 from .core.filesystem import process_file, process_folder
+from .core.verification import load_verification_plan
 from .stages import flow_obfuscator
 
 
@@ -138,6 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verify-entry", help="relative entrypoint to execute and compare (folder mode)")
     parser.add_argument("--verify-stdin", type=Path, help="UTF-8 file supplied to both verified processes")
     parser.add_argument("--verify-timeout", type=float, default=30.0, help="timeout in seconds per verified process")
+    parser.add_argument("--verify-cases", type=Path, help="JSON plan with cases, output files and Python test commands")
+    parser.add_argument("--verify-file", action="append", default=[], help="compare a relative output file (repeatable; isolated verification)")
+    parser.add_argument("--benchmark-runs", type=int, default=1, help="fresh program executions per verification case; report median wall time")
+    parser.add_argument("--metrics", action="store_true", help="measure transformation stages, output growth and verification runtimes")
+    parser.add_argument("--keep-name", action="append", default=[], help="preserve a public API identifier across files (repeatable)")
     parser.add_argument("--native-module", action="append", default=[], metavar="RELATIVE.py", help="compile an output module with installed Nuitka (folder mode, repeatable)")
     return parser
 
@@ -150,6 +156,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        verification_plan = load_verification_plan(args.verify_cases) if args.verify_cases else {}
+        verification_plan["verify_files"] = tuple(verification_plan.get("verify_files", ())) + tuple(args.verify_file)
+        if not args.folder and verification_plan.get("verify_commands"):
+            raise ValueError("Verification test commands require --folder")
         if not args.folder and (args.rename_modules or args.native_module or args.verify_entry):
             raise ValueError("--rename-modules, --native-module and --verify-entry require --folder")
         if args.folder and args.verify:
@@ -169,6 +179,10 @@ def main(argv: list[str] | None = None) -> int:
             verify_entry=args.verify_entry or ("." if args.verify else None),
             verify_stdin=args.verify_stdin.read_text(encoding="utf-8") if args.verify_stdin else "",
             verify_timeout=args.verify_timeout,
+            **verification_plan,
+            benchmark_runs=args.benchmark_runs,
+            metrics=args.metrics,
+            keep_names=tuple(args.keep_name),
             native_modules=tuple(args.native_module),
             stage_order=ALL_STAGE_ORDER if args.all else args.stage_order or DEFAULT_STAGE_ORDER,
         )
@@ -179,6 +193,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             lines = process_file(target, args.output, config, progress=_print_progress)
             print(lines[0])
+            if args.metrics or args.benchmark_runs > 1:
+                for line in lines[1:]:
+                    if line.startswith(("Metrics:", "Verification:", "Contract tests:")):
+                        print(line)
     except (
         OSError,
         SyntaxError,

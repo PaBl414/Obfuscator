@@ -2,40 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.machinery
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
 from .configuration import PipelineConfig
-
-
-def verify_programs(original: Path, transformed: Path, config: PipelineConfig) -> dict:
-    """Run explicitly selected entrypoints in separate processes with equal stdin."""
-    results = []
-    for program in (original, transformed):
-        try:
-            result = subprocess.run(
-                [sys.executable, str(program.resolve())], cwd=program.parent,
-                input=config.verify_stdin.encode("utf-8"), capture_output=True,
-                timeout=config.verify_timeout,
-                env=dict(os.environ, PYTHONIOENCODING="utf-8"),
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"Verification timed out: {program}") from exc
-        results.append(result)
-    if any(result.returncode for result in results):
-        detail = next(result.stderr.decode("utf-8", errors="replace")[-4000:]
-                      for result in results if result.returncode)
-        raise RuntimeError("Differential verification: an entrypoint exited unsuccessfully\n" + detail)
-    if results[0].stdout != results[1].stdout or results[0].stderr != results[1].stderr:
-        raise RuntimeError("Differential verification: stdout or stderr differs")
-    return {"status": "matched", "stdout_sha256": hashlib.sha256(results[0].stdout).hexdigest()}
+from .verification import verify_programs
 
 
 def check_native_dependencies(modules: tuple[str, ...]) -> None:
@@ -91,6 +67,7 @@ def write_report(config: PipelineConfig, destination: Path, stages: list,
         return
     report = {
         "schema_version": 1, "python": sys.version,
+        "status": "completed",
         "configuration": asdict(config), "destination": str(destination),
         "stages": stages, **details,
     }

@@ -19,6 +19,31 @@ smoke test are separate checks. The generated pytest suite was not counted as
 
 ## New regression coverage
 
+### Update: 2026-11-09 — project symbols, verification plans and metrics
+
+Validated locally using CPython 3.12.10 on Windows AMD64:
+
+- Full root suite: **81 tests, 80 passed and 1 optional native build skipped**.
+- Existing NavigoGrade verifier with polymorphic literals, table dispatch,
+  extended flow and physical relocation: 41 original tests passed and all
+  four original/generated CLI outputs matched.
+- Full `--all --rename-modules` NavigoGrade verification: the same four
+  original/generated CLI outputs matched.
+- Actual CLI execution with a two-case JSON plan, generated-file hashes,
+  two benchmark repetitions, stage metrics and a JSON report passed.
+- Syntax compilation and `git diff --check` passed.
+
+New checks cover module aliases, reexports, inheritance, callable aliases,
+module-returning factories, branch-dependent receivers, public API contracts,
+isolated file mismatches, explicit nonzero exit cases, external unittest
+harnesses, zero-test rejection, effective-seed reproduction, failed-stage
+reports, plan validation and CLI configuration routing.
+
+The historical Qt results above remain the earlier validation record. The Qt
+smoke could not be repeated for this update because its local Password-Generator
+input directory was unavailable. The native-build skip remains unchanged;
+this update was not executed on Linux or additional Python versions.
+
 - Every literal mode with both dispatcher modes and repeated pipeline layers.
 - Polymorphic literals across 12 keys, all byte values, Unicode, lone
   surrogates, empty values, arbitrary read order and concurrent calls.

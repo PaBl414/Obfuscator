@@ -98,6 +98,31 @@ and context-manager suites as atomic dispatcher statements. Per-literal codec
 variants are reversible before the layered decoder and use immutable chained
 keys, allowing arbitrary read order and concurrent calls.
 
+## Project symbols, execution plans and measurements
+
+`core/project_symbols.py` builds a static inter-module graph before folder
+stages. It uses compiler symbol tables to distinguish lexical locals and free
+names, resolves imports/reexports, simple callable aliases, directly constructed
+instances and known inheritance, and aligns resolved attribute/keyword sites
+with the shared name map. Unknown call keyword contracts, external import
+collisions and members affected by uncertain branch bindings are protected.
+It never imports project modules. This analysis augments the lexical checks in
+`stages/scopes.py`; dynamic runtime behavior still needs explicit contracts.
+
+`core/verification.py` owns JSON plan loading and explicit subprocess checks.
+Cases compare exit codes, stdout/stderr and optional output hashes. Test commands
+use Python argument arrays and assert successful runs against each project;
+their framework output is not compared. Advanced checks use fresh project
+copies and reject symlinks, while the legacy single-case mode retains its cwd
+behavior. Copy isolation is not OS-level sandboxing.
+
+An effective seed is resolved once at each filesystem entrypoint and passed
+through project mapping and stage allocation. Reports preserve the effective
+configuration on success and transformation/verification failures. Stage
+measurements use `perf_counter`; UTF-8 source growth and overall tree sizes
+are distinct. Process benchmarks include interpreter startup and exclude copy
+setup. Existing source/report-string API return types remain unchanged.
+
 ## Adding a stage
 
 1. Implement the transformation in `code_editors/stages/` without filesystem

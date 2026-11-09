@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import ast
+import time
 from collections import Counter
 
-from .configuration import PipelineConfig
+from .configuration import PipelineConfig, resolve_seed
 from .context import ProgressCallback, SeedAllocator, StageContext
 from .registry import STAGE_REGISTRY
 from ..stages.name_mangler import ModuleDefinitions
@@ -33,14 +34,16 @@ def transform(
     layer_number: int = 1,
     layer_count: int = 1,
     seed_allocator: SeedAllocator | None = None,
+    stage_records: list[dict] | None = None,
 ) -> tuple[str, list[str]]:
     """Apply one configured stage sequence to Python source."""
+    config = resolve_seed(config)
     allocator = seed_allocator or SeedAllocator(config.seed)
     context = StageContext(
         stage_seed=0,
         junk_count=config.junk_count,
         name_length=config.name_length,
-        protected_names=(protected_names or set()) | reflective_members(source),
+        protected_names=(protected_names or set()) | reflective_members(source) | set(config.keep_names),
         attribute_mapping=attribute_mapping,
         shared_name_mapping=shared_name_mapping,
         import_mode=config.import_mode,
@@ -66,15 +69,30 @@ def transform(
         )
         if progress is not None:
             progress(f"{prefix} — started")
+        started = time.perf_counter()
+        input_bytes = len(source.encode('utf-8'))
         try:
             source, description = STAGE_REGISTRY[stage_id](source, context)
         except Exception as exc:
+            if stage_records is not None:
+                stage_records.append({"file": progress_label, "layer": layer_number,
+                    "stage": stage_id, "seed": stage_seed, "status": "failed",
+                    "seconds": time.perf_counter() - started,
+                    "error": f"{type(exc).__name__}: {exc}"})
             if progress is not None:
                 progress(f"{prefix} — failed: {type(exc).__name__}: {exc}")
             raise
+        stage_seconds = time.perf_counter() - started
         report.append(f"{index}. {description} [seed={stage_seed}]")
+        if stage_records is not None:
+            stage_records.append({"file": progress_label, "layer": layer_number,
+                "stage": stage_id, "seed": stage_seed, "description": description,
+                "seconds": stage_seconds, "input_bytes": input_bytes,
+                "output_bytes": len(source.encode('utf-8'))})
         if progress is not None:
-            progress(f"{prefix} — completed: {description}")
+            suffix = (f" [{stage_seconds:.3f}s; {input_bytes} -> "
+                      f"{len(source.encode('utf-8'))} bytes]") if config.metrics else ""
+            progress(f"{prefix} — completed: {description}{suffix}")
     return source, report
 
 
@@ -88,8 +106,10 @@ def transform_layers(
     progress: ProgressCallback | None = None,
     progress_label: str | None = None,
     seed_allocator: SeedAllocator | None = None,
+    stage_records: list[dict] | None = None,
 ) -> tuple[str, list[str]]:
     """Apply the complete sequence repeatedly, feeding each result forward."""
+    config = resolve_seed(config)
     allocator = seed_allocator or SeedAllocator(config.seed)
     report: list[str] = []
     protected_names = (protected_names or set()) | reflective_members(source)
@@ -105,6 +125,7 @@ def transform_layers(
             layer_number=layer_number,
             layer_count=config.layers,
             seed_allocator=allocator,
+            stage_records=stage_records,
         )
         report.append(f"Layer {layer_number}/{config.layers}")
         report.extend(f"  {line}" for line in stage_report)

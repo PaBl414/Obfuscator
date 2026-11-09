@@ -7,11 +7,14 @@ import random
 import shutil
 import tokenize
 import tempfile
+import time
 from pathlib import Path
 
 from ..stages import name_mangler, import_obfuscator, function_flow
 from ..stages.scopes import project_calls
-from .configuration import PipelineConfig
+from .configuration import PipelineConfig, resolve_seed
+from .project_symbols import ProjectSymbols
+from .verification import verification_summary
 from .context import ProgressCallback, SeedAllocator, StageContext
 from .engine import transform_layers
 from .registry import STAGE_REGISTRY
@@ -95,12 +98,14 @@ def collect_string_constants(paths: list[Path]) -> set[str]:
 
 
 def collect_ambiguous_attribute_names(
-    paths: list[Path], source_folder: Path, project_modules: set[str]
+    paths: list[Path], source_folder: Path, project_modules: set[str],
+    analysis: ProjectSymbols | None = None,
 ) -> set[str]:
     """Find members also accessed through receivers outside local class bodies."""
     ambiguous: set[str] = set()
     for path in paths:
         tree = ast.parse(read_python_file(path), filename=str(path))
+        known_attributes = analysis.known_attributes(path) if analysis else set()
         classes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
         local_classes = {node.name for node in classes}
         visitor = name_mangler.ModuleDefinitions()
@@ -116,6 +121,8 @@ def collect_ambiguous_attribute_names(
         }
         for node in ast.walk(tree):
             if not isinstance(node, ast.Attribute):
+                continue
+            if (node.lineno, node.col_offset, node.attr) in known_attributes:
                 continue
             if (
                 isinstance(node.value, ast.Call)
@@ -209,6 +216,9 @@ def process_file(
     progress: ProgressCallback | None = None,
 ) -> list[str]:
     """Transform one Python file and write a separate UTF-8 output file."""
+    config = resolve_seed(config)
+    started = time.perf_counter()
+    stage_records = []
     source_path = source_path.expanduser().resolve()
     if not source_path.is_file() or source_path.suffix.lower() != ".py":
         raise ValueError("Input must be an existing .py file")
@@ -219,16 +229,19 @@ def process_file(
     )
     if destination == source_path:
         raise ValueError("The output file must be different from the input file")
-    if config.rename_modules or config.native_modules:
-        raise ValueError("Module relocation and native compilation require folder mode")
+    if config.rename_modules or config.native_modules or config.verify_commands:
+        raise ValueError("Module relocation, native compilation and test commands require folder mode")
     validate_report_path(config, source_path, destination)
 
-    transformed, report = transform_layers(
-        read_python_file(source_path),
-        config,
-        progress=progress,
-        progress_label=source_path.name,
-    )
+    source = read_python_file(source_path)
+    try:
+        transformed, report = transform_layers(source, config, progress=progress,
+            progress_label=source_path.name, stage_records=stage_records)
+    except Exception as exc:
+        write_report(config, destination, stage_records, status="failed",
+                     error=f"{type(exc).__name__}: {exc}")
+        raise
+    transform_seconds = time.perf_counter() - started
     destination.parent.mkdir(parents=True, exist_ok=True)
     compile(transformed, str(destination), "exec")
     verification = None
@@ -241,13 +254,26 @@ def process_file(
         if config.verify_entry:
             verification = verify_programs(source_path, pending, config)
         pending.replace(destination)
+    except Exception as exc:
+        write_report(config, destination, stage_records, status="failed",
+                     error=f"{type(exc).__name__}: {exc}")
+        raise
     finally:
         pending.unlink(missing_ok=True)
-    write_report(config, destination, report, verification=verification,
+    measurements = {"input_bytes": len(source.encode('utf-8')),
+        "output_bytes": len(transformed.encode('utf-8')),
+        "transform_seconds": transform_seconds,
+        "processing_seconds": time.perf_counter() - started}
+    measurements["growth_ratio"] = measurements["output_bytes"] / measurements["input_bytes"] if measurements["input_bytes"] else None
+    write_report(config, destination, stage_records, verification=verification, metrics=measurements,
         input_function_coverage=function_flow.assess_functions(read_python_file(source_path),
             allow_introspection=config.allow_introspection, extended=config.extended_flow)
             if config.report_path else [])
-    return [f"Saved: {destination}", *report]
+    summary = [f"Metrics: {measurements['processing_seconds']:.3f}s; "
+               f"{measurements['input_bytes']} -> {measurements['output_bytes']} bytes; seed={config.seed}"] if config.metrics else []
+    if config.metrics or config.benchmark_runs > 1:
+        summary.extend(verification_summary(verification))
+    return [f"Saved: {destination}", *summary, *report]
 
 
 def process_folder(
@@ -258,6 +284,8 @@ def process_folder(
     progress: ProgressCallback | None = None,
 ) -> list[str]:
     """Transform a source tree atomically from the caller's perspective."""
+    config = resolve_seed(config)
+    started = time.perf_counter()
     source_folder = source_folder.expanduser().resolve()
     if not source_folder.is_dir():
         raise ValueError("Input must be an existing directory")
@@ -284,13 +312,16 @@ def process_folder(
     if any(path.name in {"__init__.py", "__main__.py", "main.py"} for path in native_paths):
         raise ValueError("Native compilation requires ordinary modules, not entrypoints/packages")
     check_native_dependencies(config.native_modules)
+    original_sources = {path: read_python_file(path) for path in python_files}
+    analysis = ProjectSymbols(original_sources, source_folder)
+    analysis_seconds = time.perf_counter() - started
     if config.rename_modules and (source_folder / "obfuscator_bootstrap.py").exists():
         raise ValueError("Input already contains the reserved obfuscator_bootstrap.py")
     keyword_names = collect_keyword_names(python_files)
     string_constants = collect_string_constants(python_files)
     definitions: set[str] = set()
     local_callables: dict[Path, set[str]] = {}
-    exported_names: set[str] = set()
+    exported_names: set[str] = set(config.keep_names)
     for path in python_files:
         tree = ast.parse(read_python_file(path), filename=str(path))
         visitor = name_mangler.ModuleDefinitions()
@@ -309,6 +340,7 @@ def process_folder(
                             item.value for item in value.elts
                             if isinstance(item, ast.Constant) and isinstance(item.value, str)
                         )
+    definitions.update(analysis.project_import_bindings)
     all_project_identifiers = set(definitions)
     project_modules = {
         ".".join(path.relative_to(source_folder).with_suffix("").parts)
@@ -319,10 +351,10 @@ def process_folder(
     class_attribute_names = name_mangler.collect_class_attribute_names(python_files)
     reflective_attribute_names = class_attribute_names & (
         string_constants
-        | collect_ambiguous_attribute_names(python_files, source_folder, project_modules)
+        | collect_ambiguous_attribute_names(python_files, source_folder, project_modules, analysis)
     )
     definitions.difference_update(
-        exported_names | keyword_names | reflective_attribute_names
+        exported_names | keyword_names | reflective_attribute_names | analysis.external_import_bindings | analysis.unstable_members
     )
     internal_keyword_names: set[str] = set()
     callable_names_by_path: dict[Path, set[str]] = {}
@@ -345,7 +377,13 @@ def process_folder(
                 )
     internal_keyword_names.difference_update(exported_names)
     internal_keyword_names.difference_update(reflective_attribute_names)
+    internal_keyword_names.update(keyword.arg for calls in analysis.calls.values()
+                                  for call in calls for keyword in call.keywords if keyword.arg)
+    # Unknown callables may expose the same parameter spelling through aliases
+    # or external APIs. Preserve these contracts consistently across definitions.
+    internal_keyword_names.difference_update(analysis.unknown_keywords | exported_names | reflective_attribute_names)
     definitions.update(internal_keyword_names)
+    definitions.difference_update(analysis.external_import_bindings | analysis.unstable_members)
     shared_name_mapping = name_mangler.make_mapping(
         {name for name in definitions
          if name not in name_mangler.BUILTIN_NAMES
@@ -369,8 +407,7 @@ def process_folder(
         if name in shared_name_mapping
     }
 
-    destination_root.mkdir(parents=True)
-    sources = {path: read_python_file(path) for path in python_files}
+    sources = {path: analysis.rewrite_references(path, shared_name_mapping) for path in python_files}
     function_coverage = ({path.relative_to(source_folder).as_posix():
         function_flow.assess_functions(source, allow_introspection=config.allow_introspection,
                                       extended=config.extended_flow)
@@ -381,6 +418,8 @@ def process_folder(
     directories = {}
     verification = None
     native_artifacts = []
+    analysis_seconds = time.perf_counter() - started
+    destination_root.mkdir(parents=True)
     try:
         for layer in range(1, config.layers + 1):
             occurrences: dict[str, int] = {}
@@ -425,18 +464,30 @@ def process_folder(
                     )
                     if progress:
                         progress(f"{prefix} — started")
+                    stage_started = time.perf_counter()
+                    input_bytes = len(sources[source_path].encode('utf-8'))
                     try:
                         sources[source_path], description = STAGE_REGISTRY[stage_id](
                             sources[source_path], context
                         )
                     except Exception as exc:
+                        stage_records.append({"file": relative_name, "layer": layer,
+                            "stage": stage_id, "seed": seed, "status": "failed",
+                            "seconds": time.perf_counter() - stage_started,
+                            "error": f"{type(exc).__name__}: {exc}"})
                         if progress:
                             progress(f"{prefix} — failed: {type(exc).__name__}: {exc}")
                         raise
+                    stage_seconds = time.perf_counter() - stage_started
                     if progress:
-                        progress(f"{prefix} — completed: {description}")
+                        suffix = (f" [{stage_seconds:.3f}s; {input_bytes} -> "
+                                  f"{len(sources[source_path].encode('utf-8'))} bytes]") if config.metrics else ""
+                        progress(f"{prefix} — completed: {description}{suffix}")
                     stage_records.append({"file": relative_name, "layer": layer,
                                           "stage": stage_id, "seed": seed,
+                                          "seconds": stage_seconds,
+                                          "input_bytes": input_bytes,
+                                          "output_bytes": len(sources[source_path].encode('utf-8')),
                                           "description": description})
 
         # A shared project map is applied as a final consistency pass. This
@@ -482,18 +533,37 @@ def process_folder(
             if progress:
                 progress(f"Compiling native module: {relative}")
             native_artifacts.append(str(compile_native_module(destination_root / relative).relative_to(destination_root)))
-        if entry:
-            relative = entry.relative_to(source_folder)
-            verification = verify_programs(entry, destination_root / layout.get(relative, relative), config)
+        if entry or config.verify_commands:
+            relative = entry.relative_to(source_folder) if entry else Path('.')
+            verification = verify_programs(entry or source_folder,
+                destination_root / layout.get(relative, relative), config,
+                original_root=source_folder, transformed_root=destination_root)
+        input_bytes = sum(len(value.encode('utf-8')) for value in original_sources.values())
+        output_bytes = sum(path.stat().st_size for path in destination_root.rglob('*.py'))
+        measurements = {"processing_seconds": time.perf_counter() - started,
+            "analysis_seconds": analysis_seconds,
+            "stage_transform_seconds": sum(record['seconds'] for record in stage_records),
+            "input_bytes": input_bytes, "output_bytes": output_bytes,
+            "growth_ratio": output_bytes / input_bytes if input_bytes else None}
+        if config.metrics or config.report_path:
+            measurements['output_tree_bytes'] = sum(path.stat().st_size for path in destination_root.rglob('*') if path.is_file())
+            measurements['input_tree_bytes'] = sum(path.stat().st_size for path in source_folder.rglob('*')
+                if path.is_file() and not any(part in SKIPPED_DIRECTORIES for part in path.relative_to(source_folder).parts))
         write_report(config, destination_root, stage_records,
             protected_names=sorted(folder_protected_names),
             protected_members=sorted(reflective_attribute_names),
+            protected_control_flow_members=sorted(analysis.unstable_members),
             protection_reason="Reflection, ambiguous/external receivers, exports or keyword contracts",
             module_paths={str(key): str(value) for key, value in layout.items()},
             input_function_coverage=function_coverage,
+            symbol_scopes={path.relative_to(source_folder).as_posix(): records
+                           for path, records in analysis.coverage.items()},
+            metrics=measurements,
             verification=verification, native_artifacts=native_artifacts)
-    except Exception:
+    except Exception as exc:
         shutil.rmtree(destination_root, ignore_errors=True)
+        write_report(config, destination_root, stage_records, status="failed",
+                     error=f"{type(exc).__name__}: {exc}")
         raise
 
     return [
@@ -501,4 +571,7 @@ def process_folder(
         f"Transformed Python files: {len(python_files)}",
         f"Layers per file: {config.layers}",
         "Copied other files unchanged.",
+        *([f"Metrics: {measurements['processing_seconds']:.3f}s; {input_bytes} -> {output_bytes} Python bytes; seed={config.seed}"]
+          if config.metrics else []),
+        *(verification_summary(verification) if config.metrics or config.benchmark_runs > 1 else []),
     ]

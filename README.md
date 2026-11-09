@@ -354,7 +354,139 @@ Each program runs in its entrypoint's directory. Programs that print random
 values, timestamps or their own filenames need a deterministic test harness.
 This check covers the selected execution, not every possible application path.
 Folder output is removed on failure; single-file output is replaced only after
-successful verification. Reports are emitted for successful builds.
+successful verification. When a transformation or verification fails, a
+requested report records the completed stages, error and effective seed.
+
+### Project references and public interfaces
+
+Before folder transformations, a static project graph resolves module imports,
+reexports, callable aliases, directly constructed instances and known class
+inheritance. Compiler symbol tables distinguish local/free bindings and names
+shadowed by parameters. Resolved member references and keyword calls follow
+the shared project mapping, including qualified calls such as
+`package.module.function(...)`. Analysis never imports the application's code.
+
+Dynamic values and aliases that can change across branches cannot always be
+resolved. Their affected contracts are preserved conservatively and recorded
+in reports. This is static analysis, not a guarantee for arbitrary monkey
+patching, descriptors, runtime imports or inaccurate type assumptions.
+
+Use repeatable `--keep-name` options for externally consumed API names,
+including method names that an external test harness uses:
+
+```sh
+obfuscator-edu --folder ./project -o ./output --all \
+  --keep-name PublicModel --keep-name calculate
+```
+
+Explicit `__all__` exports remain protected as before. `--keep-name` applies
+across files and layers; it is intended for genuine API contracts.
+
+### Multiple verification cases and generated files
+
+Create a JSON verification plan (all fields except the version are optional):
+
+```json
+{
+  "version": 1,
+  "cases": [
+    {"name": "normal", "stdin": "12\n", "args": ["--format", "json"]},
+    {"name": "invalid-input", "stdin": "bad\n", "expected_exit": 2}
+  ],
+  "files": ["result.json"],
+  "commands": [["/absolute/path/to/contract_tests.py"]]
+}
+```
+
+Use paths appropriate to your system; the absolute harness path above is an
+example. The application's entrypoint must accept the specified arguments,
+produce the listed files for every case, and return the expected exit codes.
+`expected_exit` defaults to zero. Each case compares stdout, stderr and SHA-256
+hashes of the listed files. File paths are relative to the project root and
+cannot escape it; comparison is byte-for-byte, including JSON formatting.
+
+```sh
+obfuscator-edu --folder ./project -o ./output --all \
+  --verify-entry main.py --verify-cases cases.json \
+  --benchmark-runs 3 --metrics --report output.report.json --seed 42
+```
+
+For a single file, combine `--verify --verify-cases cases.json`. Test commands
+require folder mode. A repeatable `--verify-file result.json` adds file checks
+without requiring a JSON plan. Plans, file checks and repeated benchmarks use
+fresh independent project copies for each original/generated execution;
+relative output files do not modify the input or completed build.
+
+Copies omit Git metadata, virtual environments and common caches. Symlinked
+projects are rejected by isolated verification. This is working-directory
+isolation, **not a security sandbox**: programs still have the interpreter's
+normal network and absolute-filesystem permissions. Legacy one-case verification
+without these options retains its original working-directory behavior.
+
+### Run an application's contract tests against the output
+
+`commands` contains Python argument arrays, never shell command strings.
+For example, `["-m", "unittest", "discover", "-s", "tests"]` launches Python's
+test runner independently in the original and generated project roots.
+Each command runs in fresh copies and must exit successfully in both.
+Runner text is not compared because test durations and traceback paths vary;
+detected unittest runs with zero tests are rejected. Entry cases remain exact
+output comparisons.
+
+For reliable API checks, keep the harness outside the obfuscated source tree,
+use an absolute harness path in the plan, and import the public modules from
+that harness. The selected project root is added to `PYTHONPATH`. Preserve
+public names with `__all__`/`--keep-name`; keep your test harness directory free
+of modules that would shadow the project. A harness testing physically relocated
+modules should first import `obfuscator_bootstrap` for the generated tree (and
+handle its absence when checking the original).
+
+If tests live inside the transformed tree, their discovery names and test
+framework contracts must be preserved too; a successful discovery of zero
+tests does not validate the output. A plan containing only `commands` can be
+used without `--verify-entry`. These checks execute the application's tests;
+they do not invent tests for unspecified behavior.
+
+### Measure cost and reproduce failures
+
+`--metrics` adds stage times and source-size changes to progress output, plus
+a final processing summary. A JSON report records each stage's elapsed seconds,
+input/output UTF-8 byte counts, aggregate Python-source growth, project-tree
+sizes, symbol scopes and protected contracts. Folder stage totals exclude the
+final consistency/write/native phases; total processing includes them and any
+explicit verification. Native extensions/resources are included in tree sizes,
+not Python-source growth.
+
+`--benchmark-runs N` runs each explicit verification case N times and records
+median original/generated process wall times, individual samples and their
+ratio. These timings include Python startup and application execution, exclude
+verification-copy creation, and are affected by system load. This option
+executes both programs repeatedly and requires `--verify`/`--verify-entry`.
+`--metrics` alone does not execute the application.
+
+When no seed is supplied, filesystem APIs now choose and record one effective
+seed covering project analysis and all stage allocations. Reproduce a build
+using that seed and the report's configuration with the same source, project
+layout, dependencies and Python version. Failed transformation/verification
+reports retain this information even when incomplete output is removed.
+Timing measurements are observational and do not alter seeded source output.
+Reports contain configuration and verification inputs; keep them private.
+
+The Python API exposes `VerificationCase`, `verify_cases`, `verify_files`,
+`verify_commands`, `benchmark_runs`, `metrics` and `keep_names`:
+
+```python
+from pathlib import Path
+from code_editors import PipelineConfig, VerificationCase, process_folder
+
+config = PipelineConfig(
+    seed=42, verify_entry="main.py",
+    verify_cases=(VerificationCase(name="normal", stdin="12\n"),),
+    verify_files=("result.json",), benchmark_runs=3, metrics=True,
+    report_path=Path("output.report.json"),
+)
+process_folder(Path("project"), Path("output"), config)
+```
 
 ## Optional native modules
 

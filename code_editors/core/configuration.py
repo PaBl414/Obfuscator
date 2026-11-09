@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import math
+import secrets
 from typing import Literal
 
 StageId = Literal[
@@ -20,6 +21,14 @@ StageId = Literal[
     "numeric",
 ]
 ImportMode = Literal["aliases", "runtime"]
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationCase:
+    name: str = "default"
+    stdin: str = ""
+    args: tuple[str, ...] = ()
+    expected_exit: int = 0
 
 REGISTERED_STAGE_IDS: tuple[StageId, ...] = (
     "junk",
@@ -74,6 +83,12 @@ class PipelineConfig:
     verify_stdin: str = ""
     verify_timeout: float = 30.0
     native_modules: tuple[str, ...] = ()
+    verify_cases: tuple[VerificationCase, ...] = ()
+    verify_files: tuple[str, ...] = ()
+    verify_commands: tuple[tuple[str, ...], ...] = ()
+    benchmark_runs: int = 1
+    metrics: bool = False
+    keep_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.layers < 1:
@@ -88,8 +103,31 @@ class PipelineConfig:
             raise ValueError("Unknown literal_mode")
         if not math.isfinite(self.verify_timeout) or self.verify_timeout <= 0:
             raise ValueError("verify_timeout must be finite and positive")
+        if isinstance(self.benchmark_runs, bool) or not isinstance(self.benchmark_runs, int) or self.benchmark_runs < 1:
+            raise ValueError("benchmark_runs must be a positive integer")
+        if not all(isinstance(name, str) and name.isidentifier() for name in self.keep_names):
+            raise ValueError("keep_names must contain Python identifiers")
+        for case in self.verify_cases:
+            if (not isinstance(case, VerificationCase) or not isinstance(case.name, str)
+                    or not isinstance(case.stdin, str) or not all(isinstance(arg, str) for arg in case.args)
+                    or type(case.expected_exit) is not int):
+                raise ValueError("Invalid verification case")
+        for value in self.verify_files:
+            path = Path(value)
+            if not value or path.is_absolute() or '..' in path.parts:
+                raise ValueError("Verification files must be relative paths without '..'")
+        if any(not command or not all(isinstance(arg, str) for arg in command)
+               for command in self.verify_commands):
+            raise ValueError("Verification commands must be nonempty Python argument lists")
+        if (self.verify_cases or self.verify_files or self.benchmark_runs > 1) and not self.verify_entry:
+            raise ValueError("Cases, output file checks and benchmark runs require a verification entrypoint")
         if self.rename_modules and self.native_modules:
             raise ValueError("Native modules and module relocation must be built separately")
         if self.dispatch_mode not in ("branches", "table"):
             raise ValueError("dispatch_mode must be 'branches' or 'table'")
         validate_stage_order(self.stage_order)
+
+
+def resolve_seed(config: PipelineConfig) -> PipelineConfig:
+    """Persist one effective seed for reproducible analysis and transformation."""
+    return replace(config, seed=secrets.randbits(64)) if config.seed is None else config

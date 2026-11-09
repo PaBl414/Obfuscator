@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added static project symbol analysis for import/reexport aliases, qualified
+  references, direct instances and inheritance, with compiler scope tables and
+  conservative handling of ambiguous receiver/keyword contracts.
+- Added JSON verification plans, multiple argument/stdin/exit-code cases,
+  isolated generated-file checks and Python contract-test commands.
+- Added stage time/size measurements, repeated process benchmarks and effective
+  seeds in successful/failed reports for reproduction.
+- Added explicit `--keep-name` public API contracts and exported `VerificationCase`.
+
 - Documented Linux setup for APT, DNF, Pacman, Zypper and APK families, including
   isolated installation, versioned interpreters, optional Tk and headless use.
 - Converted unavailable Tk/display errors into actionable CLI messages and
