@@ -5,11 +5,32 @@ from __future__ import annotations
 import ast
 import time
 from collections import Counter
+from dataclasses import replace
 
 from .configuration import PipelineConfig, resolve_seed
 from .context import ProgressCallback, SeedAllocator, StageContext
 from .registry import STAGE_REGISTRY
 from ..stages.name_mangler import ModuleDefinitions
+from .hex_bundle import bundle_text
+
+
+def _hex_prepass(source, config, progress, records):
+    if not config.hex_pack:
+        return source, config, []
+    if config.hex_entry is not None or config.hex_entry_mode != 'auto':
+        raise ValueError("Hex entrypoint selection is only available for folder input")
+    if progress:
+        progress("Preprocess: hexadecimal — started")
+    started = time.perf_counter()
+    bundle = bundle_text(source, cwd=config.hex_cwd)
+    description = "Hexadecimal packing: created one launcher before pipeline stages"
+    if records is not None:
+        records.append({"stage": "hexadecimal", "phase": "preprocess", "seed": None,
+            "seconds": time.perf_counter() - started, "input_bytes": len(source.encode('utf-8')),
+            "output_bytes": len(bundle.source.encode('utf-8')), "description": description})
+    if progress:
+        progress(f"Preprocess: hexadecimal — completed: {description}")
+    return bundle.source, replace(config, hex_pack=False, hex_entry=None, hex_cwd="caller", hex_entry_mode='auto'), [description]
 
 
 def reflective_members(source: str) -> set[str]:
@@ -37,7 +58,10 @@ def transform(
     stage_records: list[dict] | None = None,
 ) -> tuple[str, list[str]]:
     """Apply one configured stage sequence to Python source."""
+    if config.rename_modules or config.native_modules:
+        raise ValueError("Module relocation and native compilation require process_folder")
     config = resolve_seed(config)
+    source, config, packing_report = _hex_prepass(source, config, progress, stage_records)
     allocator = seed_allocator or SeedAllocator(config.seed)
     context = StageContext(
         stage_seed=0,
@@ -52,7 +76,7 @@ def transform(
         allow_introspection=config.allow_introspection,
         extended_flow=config.extended_flow,
     )
-    report: list[str] = []
+    report: list[str] = list(packing_report)
     totals = Counter(config.stage_order)
     seen: Counter[str] = Counter()
 
@@ -109,9 +133,12 @@ def transform_layers(
     stage_records: list[dict] | None = None,
 ) -> tuple[str, list[str]]:
     """Apply the complete sequence repeatedly, feeding each result forward."""
+    if config.rename_modules or config.native_modules:
+        raise ValueError("Module relocation and native compilation require process_folder")
     config = resolve_seed(config)
+    source, config, packing_report = _hex_prepass(source, config, progress, stage_records)
     allocator = seed_allocator or SeedAllocator(config.seed)
-    report: list[str] = []
+    report: list[str] = list(packing_report)
     protected_names = (protected_names or set()) | reflective_members(source)
     for layer_number in range(1, config.layers + 1):
         source, stage_report = transform(

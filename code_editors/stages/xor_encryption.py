@@ -134,8 +134,12 @@ def obfuscate_chained_literals(
         "        return value",
         f"    return {reader_name}",
         f"{bytes_decoder} = {bytes_decoder}()",
-        f"def {text_decoder}(_index, _str=str):",
-        f"    return _str({bytes_decoder}(_index), 'utf-8', 'surrogatepass')",
+        f"def {text_decoder}(_index, _str=str, _cache={{}}):",
+        "    if _index in _cache:",
+        "        return _cache[_index]",
+        f"    value = _str({bytes_decoder}(_index), 'utf-8', 'surrogatepass')",
+        "    _cache[_index] = value",
+        "    return value",
     ]
     lines = result.decode("utf-8").split("\n")
     insert = find_insert_line(tree, source)

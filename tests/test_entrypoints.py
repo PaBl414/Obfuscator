@@ -37,6 +37,7 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(config.literal_mode, "polymorphic")
         self.assertTrue(config.extended_flow)
         self.assertEqual(config.dispatch_mode, "table")
+        self.assertTrue(config.hex_pack)
         self.assertFalse(config.allow_introspection)
         self.assertEqual(config.stage_order.count("xor"), 2)
         self.assertEqual(config.stage_order.count("name_mangler"), 2)

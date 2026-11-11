@@ -100,7 +100,8 @@ def verification_summary(result: dict | None) -> list[str]:
 
 def verify_programs(original: Path, transformed: Path, config: PipelineConfig,
                     *, original_root: Path | None = None,
-                    transformed_root: Path | None = None) -> dict:
+                    transformed_root: Path | None = None,
+                    original_module: str | None = None) -> dict:
     """Compare explicit cases and run assertions against independent project copies.
 
     Legacy single-entry verification keeps its original working-directory
@@ -129,7 +130,11 @@ def verify_programs(original: Path, transformed: Path, config: PipelineConfig,
                         cwd = entry.parent
                     else:
                         workspace, entry, cwd = root, program, program.parent
-                    result, seconds = _execute([str(entry), *case.args], cwd,
+                    arguments = [str(entry), *case.args]
+                    if index == 0 and original_module:
+                        arguments = ['-m', original_module, *case.args]
+                        cwd = workspace
+                    result, seconds = _execute(arguments, cwd,
                                                case.stdin, config.verify_timeout)
                     if result.returncode != case.expected_exit:
                         detail = result.stderr.decode("utf-8", errors="replace")[-4000:]

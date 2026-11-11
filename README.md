@@ -137,14 +137,14 @@ After activating the virtual environment:
 obfuscator-edu "./my project/app.py" -o ./app_obfuscated.py --all
 
 # A directory; the output must be outside the input and must not already exist.
-obfuscator-edu --folder ./my_project -o ./my_project_obfuscated \
-  --all --rename-modules --report ./my_project.report.json
+obfuscator-edu --folder ./my_project -o ./my_project_packed.py \
+  --all --report ./my_project.report.json
 
 # Equivalent module entrypoint, including on headless systems.
-python -m code_editors --folder ./my_project -o ./another_output --all
+python -m code_editors --folder ./my_project -o ./another_output.py --all
 
 # Run the result if main.py is the application's entrypoint.
-python ./my_project_obfuscated/main.py
+python ./my_project_packed.py
 ```
 
 Linux paths are case-sensitive. Use `/` separators and Bash `\` line
@@ -231,7 +231,7 @@ To permit flow and runtime-import transformation even when the source uses
 does not enable it automatically:
 
 ```powershell
-python pipeline.py --folder Test --output Test_strong --all --allow-introspection
+python pipeline.py --folder Test --output Test_strong.py --all --allow-introspection
 ```
 
 These readers can observe generated dispatcher variables and renamed symbols.
@@ -244,21 +244,71 @@ checks remain active. The Python API exposes the same option through
 Enable the strong source-obfuscation preset with a single option:
 
 ```powershell
-python pipeline.py --folder Test --output Test_strong --all
+python pipeline.py --folder Test --output Test_strong.py --all
 python pipeline.py app.py --all
 ```
 
-`--all` selects runtime imports, polymorphic chained literal encoding, extended function flow, table dispatch,
+`--all` selects HEX single-file packing, runtime imports, polymorphic chained literal encoding, extended function flow, table dispatch,
 six-character identifiers and the repeated stage order below. It runs at least
 two layers with at least 16 junk blocks per occurrence. Larger explicit
-`--layers` and `--junk-count` values are respected; other strength options and
-`--stage-order` are overridden by the preset. Input/output paths and `--seed`
+`--layers` and `--junk-count` values are respected; other strength options are
+overridden by the preset. An explicit `--stage-order` overrides the preset's
+sequence while retaining its strength settings. Input/output paths and `--seed`
 continue to work normally. This preset increases output size and startup time;
 there is no finite maximum for the number of layers or junk blocks.
-Physical module relocation remains an explicit `--rename-modules` choice;
-verification, reports and native compilation are also opt-in.
+This preset enables all compatible transformation families with conservative
+compatibility guards. It does not bypass reflection/introspection protections.
+Mutually exclusive modes (such as two different literal codecs or dispatch
+strategies) use the strongest available setting, rather than running both.
 
-Stage IDs may repeat. Every registered stage must appear at least once:
+The output is now a **single `.py` file**, including for folder input. Packing
+requires an application entrypoint and includes the original modules/resources;
+subsequent source stages obfuscate the launcher. Dependencies must still be
+installed. Runtime extracts temporary files; see the HEX limitations below.
+For a library, or to transform the individual modules in a folder, use `--all`
+with an explicit source-only `--stage-order`.
+
+Physical module relocation and native compilation remain explicit choices
+because they cannot currently be combined with HEX. Native compilation also
+requires Nuitka, a C compiler and platform-specific output. To use either,
+combine its flag with `--all --stage-order` selecting source stages without
+`hexadecimal`. Incompatible combinations fail instead of silently omitting
+operations. Verification, reports and benchmarks remain opt-in execution tools.
+
+`--stage-order` selects **which transformations run and in what order**.
+Choose any subset or all nine source stages; source IDs may repeat.
+Omitting the option retains the default full sequence.
+
+Source IDs: `junk`, `imports`, `xor`, `function_flow`, `module_flow`,
+`flattener`, `name_mangler`, `cleanup`, `numeric`.
+
+```sh
+# Only literal encoding and identifier renaming, in this order.
+obfuscator-edu app.py --stage-order xor,name_mangler -o app_obfuscated.py
+
+# Only packing; equivalent to --hex-only.
+obfuscator-edu --folder ./project --stage-order hexadecimal -o project_packed.py
+
+# Pack first, then inject junk and encode literals in the launcher.
+obfuscator-edu app.py --stage-order hexadecimal,junk,xor -o app_packed.py
+
+# Transform selected source stages, then relocate physical module paths.
+obfuscator-edu --folder ./project --stage-order xor,name_mangler,rename_modules -o project_out
+
+# Only native compilation (requires the optional native dependencies).
+obfuscator-edu --folder ./project --stage-order native --native-module worker.py -o project_native
+```
+
+Optional operation IDs: `hexadecimal` must come first; `rename_modules` and
+`native` must come last. These operations run once, outside the repeated source
+layers. Their existing flags still work. `native` requires `--native-module`
+paths; relocation and native compilation cannot be combined, and neither can
+be combined with HEX packing. Folder-only operations require `--folder`.
+Use `--stage-order none` to disable all source stages (for example with
+`--hex-pack`). Import/literal/dispatch modes and `--extended-flow` configure
+their corresponding selected stages; they are not separate stages.
+
+Example with all nine source stages and repeated encoders:
 
 ```powershell
 obfuscator-edu --folder Test --output Test_o `
@@ -270,6 +320,111 @@ obfuscator-edu --folder Test --output Test_o `
 Use `--seed N` for reproducible output. Without a seed, every stage receives a
 different cryptographically random 64-bit seed. `--layers N` repeats the whole
 configured order and feeds each layer into the next one.
+
+## Optional hexadecimal single-file packing
+
+`--hex-pack` (alias `--hexadecimal`) creates **one executable Python file**
+containing a ZIP archive encoded as hexadecimal. It works with a script or
+an entire application folder, including Python modules and resource files.
+It is enabled by `--hex-pack`, `--hex-only`, or the default `--all` preset.
+An explicit `--stage-order` replaces that preset sequence, so include
+`hexadecimal` first if packing is wanted with custom stage selection.
+
+```sh
+# HEX only: no junk, name mangling, literal encoding or flow transformations.
+obfuscator-edu ./app.py --hex-only -o ./app_packed.py
+obfuscator-edu --folder ./project --hex-only -o ./project_packed.py
+
+# One script -> one packed file, then the configured obfuscation stages.
+obfuscator-edu ./app.py --hex-pack -o ./app_packed.py --all
+
+# An application directory -> one packed file.
+obfuscator-edu --folder ./project --hex-pack --hex-entry main.py \
+  -o ./project_packed.py --all --report ./project.report.json
+
+python ./project_packed.py
+```
+
+Order is always:
+
+```text
+hexadecimal packing -> configured stages (junk/dead code, imports, literals,
+                       name mangling, flow, cleanup, numeric...) -> output .py
+```
+
+`--hex-only` enables packing and disables all source stages. It cannot be
+combined with `--all`, `--stage-order`, relocation or native compilation.
+Use `--stage-order hexadecimal,...` for a custom combination instead.
+
+Packing runs **once, before layer 1**, regardless of `--layers`. It is a
+preprocessing operation selectable as the first `hexadecimal` ID in
+`--stage-order` or via `--hex-pack`. The later stages operate on the launcher and its payload
+literals. The archive contains the original application sources; these are
+restored at execution. Hexadecimal is an encoding, not encryption; the existing
+literal encoders apply to the launcher when their stages execute.
+
+Without `-o`, a script produces `<stem>_packed.py`, and a folder produces a
+sibling `<folder>_packed.py`. Folder mode requires a `.py` output outside the
+input tree and rejects an existing output file. File mode retains atomic
+replacement behavior. A single script packs that file; use folder mode to
+include its local modules and resources.
+
+### Entrypoints and runtime files
+
+If not specified, a folder uses root `main.py`, then root `__main__.py`, a
+unique package `__main__.py`, or a unique nested `main.py`, in that order. If no
+conventional entry exists, a sole Python file is selected. When there is no
+unambiguous entrypoint, `--hex-pack` asks you to specify one; override automatic
+selection with `--hex-entry relative/path.py`. `--hex-entry-mode` controls execution:
+
+- `auto` (default): regular package entries with valid module names and parent
+  directories containing `__init__.py` run as modules; other entries run as scripts.
+- `script`: execute the selected file as a script, with its directory on the
+  import path.
+- `module`: execute using its dotted module name; this also supports namespace
+  package entries without `__init__.py`.
+
+For example, `--hex-entry pkg/cli.py --hex-entry-mode module` corresponds to
+`python -m pkg.cli` from the input root. Original/generated verification uses
+that same entry mode. Arguments and exit codes are forwarded to the program.
+
+The distributed artifact is a single `.py`; runtime files are extracted to a
+temporary directory and the selected entrypoint runs under the same Python
+interpreter, supporting ordinary imports and `__file__`-relative reads.
+This is not an entirely in-memory execution format. Temporary resources remain
+available to application exit handlers, followed by best-effort cleanup.
+Forced termination or locked native libraries can leave temporary files.
+Paths, timestamps and loader metadata can differ from the original deployment.
+
+By default, `--hex-cwd caller` preserves the invoking process's working
+directory. `--hex-cwd bundle` instead changes to the extracted project root,
+which supports applications opening assets by relative paths. Relative writes
+in `bundle` mode and writes beside extracted `__file__` paths are temporary;
+use caller-relative or absolute external paths for persistent output.
+
+Installed third-party dependencies remain required. The archive uses the
+pipeline's directory exclusions (Git metadata, environments, caches, build
+output, etc.); `.gitignore` is not an archive filter. Other selected files,
+including configuration and data, are embedded. The report's `packing` section
+lists the included files, entry mode and archive sizes. Source symlinks and
+junctions are rejected.
+
+### Verification and API
+
+`--verify` works for packed scripts. For packed folders, use
+`--verify-entry` with the same relative path as `--hex-entry` (or omit
+`--hex-entry` and let verification select it). Existing multi-case JSON plans
+and benchmark options also work. Generated-file checks require `--hex-cwd caller`.
+
+Hex packing is an executable-entrypoint mode and cannot be combined with
+`--rename-modules`, `--native-module` or library verification commands. Its
+archive already supplies the module layout and the output is a launcher.
+
+The Python API accepts `PipelineConfig(hex_pack=True, hex_entry="main.py")`
+with `process_folder`; `process_file` only needs `hex_pack=True`.
+`transform` and `transform_layers` can also pack source text once, using an
+embedded `main.py`. Entry selection/mode options belong to folder input.
+Reports record the hexadecimal prepass before all ordinary stage records.
 
 ## Stages
 
@@ -297,8 +452,8 @@ table. Each key depends on the preceding key and ciphertext. A literal's own
 record is insufficient to derive its key; initialization reconstructs the chain
 once and retains immutable keys. Decoding does not depend on which literals were
 executed previously, so recursion, branches, loops and threads can share it.
-Decoded byte values are cached per literal, preventing repeated codec work
-inside dispatch loops and successive obfuscation layers.
+Decoded byte and text values are cached per literal, preventing repeated codec
+work inside dispatch loops and successive obfuscation layers.
 The complete generated program still contains enough material to recover all
 values. Repeated encoders and layers increase output size and initialization
 time; use `--seed N` to reproduce a problem.
@@ -318,6 +473,7 @@ functions and introspection-sensitive bodies can still be skipped.
 
 ```powershell
 python -m code_editors --folder Test -o Test_protected --all `
+  --stage-order imports,junk,xor,name_mangler,function_flow,module_flow,flattener,junk,xor,name_mangler,numeric,cleanup `
   --rename-modules --report Test_protected.report.json `
   --verify-entry main.py --verify-stdin sample_input.txt --seed 42
 ```
@@ -376,6 +532,7 @@ including method names that an external test harness uses:
 
 ```sh
 obfuscator-edu --folder ./project -o ./output --all \
+  --stage-order imports,junk,xor,name_mangler,function_flow,module_flow,flattener,junk,xor,name_mangler,numeric,cleanup \
   --keep-name PublicModel --keep-name calculate
 ```
 
@@ -407,6 +564,7 @@ cannot escape it; comparison is byte-for-byte, including JSON formatting.
 
 ```sh
 obfuscator-edu --folder ./project -o ./output --all \
+  --stage-order imports,junk,xor,name_mangler,function_flow,module_flow,flattener,junk,xor,name_mangler,numeric,cleanup \
   --verify-entry main.py --verify-cases cases.json \
   --benchmark-runs 3 --metrics --report output.report.json --seed 42
 ```
@@ -493,6 +651,7 @@ process_folder(Path("project"), Path("output"), config)
 ```powershell
 python -m pip install -e ".[native]"
 python -m code_editors --folder MyProject -o MyProject_native --all `
+  --stage-order imports,junk,xor,name_mangler,function_flow,module_flow,flattener,junk,xor,name_mangler,numeric,cleanup `
   --native-module package/core.py --report native.report.json
 ```
 
@@ -591,6 +750,7 @@ code_editors/
     engine.py             ordered stage and layer execution
     filesystem.py         file/folder processing and project analysis
     project_layout.py     physical module relocation and importlib loader
+    hex_bundle.py         optional single-file ZIP+hex preprocessing
     artifacts.py          reports, differential execution, native backend
     registry.py           stage adapters and immutable registry
   stages/                 independent source transformations
@@ -638,6 +798,8 @@ python scripts/verify_example.py Test --all --rename-modules
 ```
 
 The verification scripts create temporary output and remove it after the check.
+The example verifier's `--all` switch covers strong source transformations in a
+folder build without HEX, allowing it to test module relocation separately.
 
 The native integration test is optional because it requires Nuitka and a C
 compiler. Enable it with `$env:OBFUSCATOR_TEST_NATIVE='1'` before running the

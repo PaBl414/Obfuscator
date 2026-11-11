@@ -17,7 +17,7 @@ class PipelineConfigTests(unittest.TestCase):
             {"junk_count": 0},
             {"name_length": 3},
             {"import_mode": "unknown"},
-            {"stage_order": ("junk",)},
+            {"stage_order": ("unknown",)},
         )
         for values in invalid_values:
             with self.subTest(values=values), self.assertRaises(ValueError):

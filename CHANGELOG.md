@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- The default `--all` CLI preset now includes HEX packing and outputs one `.py`
+  file. An explicit `--stage-order` still selects the exact operations while
+  retaining strong settings. Relocation/native/library-test combinations require
+  an explicit source-only order, with an actionable error on conflicts.
+
+- Added `--hex-only` and stage subsets, repeated source stages, `none`, and
+  optional boundary-operation IDs in `--stage-order`. Explicit stage selection
+  now takes precedence over the sequence supplied by `--all`.
+- Disabled shared project identifier rewriting when `name_mangler` is not selected.
+
+- Added opt-in `--hex-pack` / `--hexadecimal`: scripts or complete application
+  folders become one ZIP+hex launcher before junk and all other pipeline stages.
+- Added packed entry selection, script/module execution and working-directory
+  choices; retained package resources, source encodings and exit-handler access
+  to temporary files, with Windows-safe cleanup ordering.
+- Integrated packed-file verification, reports, metrics and the source-text API.
+- Cache decoded chained text as well as bytes to reduce repeated work during
+  strong, multilayer dispatcher execution.
+
 - Added static project symbol analysis for import/reexport aliases, qualified
   references, direct instances and inheritance, with compiler scope tables and
   conservative handling of ambiguous receiver/keyword contracts.

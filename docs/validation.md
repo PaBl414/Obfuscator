@@ -1,5 +1,41 @@
 # Validation record
 
+## Update: 2026-11-11 — selected stages and full compatible CLI preset
+
+- Full suite after changing the preset: 103 tests, 102 passed and one optional
+  native integration test skipped.
+- Final focused stage-selection suite: all 10 tests passed, including an added
+  real folder `--all` build with original/output verification and one `.py`
+  artifact. The default CLI now includes HEX without a separate packing flag.
+- Checked each source stage independently in text and folder modes, empty and
+  repeated selections, HEX-only output, optional operation boundaries and
+  conflicts. Explicit selections retain strong settings while overriding the
+  default operation sequence.
+- The example verifier's own `--all` switch checks strong source transformations
+  without HEX; its folder relocation checks remain separate from CLI packing.
+
+## Update: 2026-11-11 — optional hexadecimal single-file packing
+
+Validated using CPython 3.12.10 on Windows AMD64:
+
+- Full root suite: **94 tests, 93 passed and 1 optional native build skipped**.
+- The local Test application was packed from 13 files into one launcher using
+  the full two-layer strong preset. All four original/bundled CLI outputs matched.
+- Hex regression checks cover preprocessing order, once-only packing across
+  layers, the actual `--all` CLI, source encodings, arguments/exit codes,
+  regular and namespace packages, sibling imports, Unicode/binary resources,
+  moving the artifact away from its source, working-directory modes, isolated
+  generated-file checks, exit-handler resources, temporary cleanup and invalid
+  paths/combinations.
+- Dedicated hexadecimal launcher suite: all 13 tests passed.
+- Syntax compilation, CLI help and `git diff --check` passed.
+
+The new launcher has not been executed on Linux in this environment. POSIX
+permission restoration remains subject to Linux CI. Native compilation and Qt
+coverage retain the limitations recorded below.
+
+## Earlier validation
+
 Validated on 2026-11-08 using CPython 3.12.10, Windows AMD64.
 
 | Check | Result |

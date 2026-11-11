@@ -30,6 +30,7 @@ Thumbs.db
 # Generated example output
 *_edited.py
 *_processed/
+*_packed.py
 
 # Local input projects, scratch examples and generated output from development
 /Test/

@@ -47,7 +47,7 @@ def main() -> None:
     parser.add_argument("--allow-introspection", action="store_true")
     parser.add_argument("--extended-flow", action="store_true")
     parser.add_argument("--rename-modules", action="store_true")
-    parser.add_argument("--all", action="store_true", help="verify the complete strong preset")
+    parser.add_argument("--all", action="store_true", help="verify all strong source transformations (folder build, without HEX packing)")
     args = parser.parse_args()
     source = args.source.resolve()
     cases = (

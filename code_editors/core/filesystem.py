@@ -8,6 +8,7 @@ import shutil
 import tokenize
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from ..stages import name_mangler, import_obfuscator, function_flow
@@ -21,6 +22,7 @@ from .registry import STAGE_REGISTRY
 from .artifacts import (check_native_dependencies, compile_native_module,
                         project_entry, validate_report_path, verify_programs, write_report)
 from .project_layout import plan_layout, relocated_path, inject_loader, loader_source
+from .hex_bundle import HexBundle, bundle_file, bundle_project
 
 SKIPPED_DIRECTORIES = frozenset(
     {
@@ -218,12 +220,11 @@ def process_file(
     """Transform one Python file and write a separate UTF-8 output file."""
     config = resolve_seed(config)
     started = time.perf_counter()
-    stage_records = []
     source_path = source_path.expanduser().resolve()
     if not source_path.is_file() or source_path.suffix.lower() != ".py":
         raise ValueError("Input must be an existing .py file")
     destination = (
-        source_path.with_name(f"{source_path.stem}_edited.py")
+        source_path.with_name(f"{source_path.stem}_{'packed' if config.hex_pack else 'edited'}.py")
         if output_path is None
         else output_path.expanduser().resolve()
     )
@@ -232,13 +233,39 @@ def process_file(
     if config.rename_modules or config.native_modules or config.verify_commands:
         raise ValueError("Module relocation, native compilation and test commands require folder mode")
     validate_report_path(config, source_path, destination)
+    if config.hex_pack and (destination.suffix.lower() != '.py' or config.hex_entry is not None or config.hex_entry_mode != 'auto'):
+        raise ValueError("Hex file output must be .py; --hex-entry is only for folder input")
+    packing = None
+    if config.hex_pack:
+        if progress:
+            progress("Preprocess: hexadecimal — started")
+        packing = bundle_file(source_path, cwd=config.hex_cwd)
+        if progress:
+            progress("Preprocess: hexadecimal — completed: single-file launcher created")
+    source = packing.source if packing else read_python_file(source_path)
+    return _process_source_file(source_path, destination, source, config, progress,
+                                started, packing=packing)
 
-    source = read_python_file(source_path)
+
+def _process_source_file(source_path: Path, destination: Path, source: str,
+                         config: PipelineConfig, progress, started: float,
+                         *, packing: HexBundle | None = None,
+                         original_root: Path | None = None) -> list[str]:
+    """Transform/write one prepared source, atomically preserving file outputs."""
+    stage_records = []
+    if packing:
+        stage_records.append({"stage": "hexadecimal", "phase": "preprocess", "seed": None,
+            "seconds": time.perf_counter() - started,
+            "input_bytes": packing.manifest['source_bytes'],
+            "output_bytes": len(source.encode('utf-8')),
+            "description": "Hexadecimal packing: created launcher before pipeline stages"})
+    stage_config = (replace(config, hex_pack=False, hex_entry=None, hex_cwd='caller', hex_entry_mode='auto')
+                    if packing else config)
     try:
-        transformed, report = transform_layers(source, config, progress=progress,
+        transformed, report = transform_layers(source, stage_config, progress=progress,
             progress_label=source_path.name, stage_records=stage_records)
     except Exception as exc:
-        write_report(config, destination, stage_records, status="failed",
+        write_report(config, destination, stage_records, status="failed", packing=packing.manifest if packing else None,
                      error=f"{type(exc).__name__}: {exc}")
         raise
     transform_seconds = time.perf_counter() - started
@@ -252,20 +279,32 @@ def process_file(
         temporary.write(transformed)
     try:
         if config.verify_entry:
-            verification = verify_programs(source_path, pending, config)
+            if packing:
+                # Validate the distributed artifact independently of unrelated
+                # siblings in the output directory (and of the input project).
+                with tempfile.TemporaryDirectory(prefix='obfuscator-hex-check-') as check_directory:
+                    check_root = Path(check_directory)
+                    candidate = check_root / destination.name
+                    shutil.copy2(pending, candidate)
+                    verification = verify_programs(source_path, candidate, config,
+                        original_root=original_root, transformed_root=check_root,
+                        original_module=packing.entry_module)
+            else:
+                verification = verify_programs(source_path, pending, config)
         pending.replace(destination)
     except Exception as exc:
-        write_report(config, destination, stage_records, status="failed",
+        write_report(config, destination, stage_records, status="failed", packing=packing.manifest if packing else None,
                      error=f"{type(exc).__name__}: {exc}")
         raise
     finally:
         pending.unlink(missing_ok=True)
-    measurements = {"input_bytes": len(source.encode('utf-8')),
+    measurements = {"input_bytes": packing.manifest['source_bytes'] if packing else len(source.encode('utf-8')),
         "output_bytes": len(transformed.encode('utf-8')),
         "transform_seconds": transform_seconds,
         "processing_seconds": time.perf_counter() - started}
     measurements["growth_ratio"] = measurements["output_bytes"] / measurements["input_bytes"] if measurements["input_bytes"] else None
     write_report(config, destination, stage_records, verification=verification, metrics=measurements,
+        packing=packing.manifest if packing else None,
         input_function_coverage=function_flow.assess_functions(read_python_file(source_path),
             allow_introspection=config.allow_introspection, extended=config.extended_flow)
             if config.report_path else [])
@@ -274,6 +313,29 @@ def process_file(
     if config.metrics or config.benchmark_runs > 1:
         summary.extend(verification_summary(verification))
     return [f"Saved: {destination}", *summary, *report]
+
+
+def _process_hex_folder(source_folder, output_path, config, progress, started):
+    destination = (source_folder.with_name(source_folder.name + '_packed.py')
+                   if output_path is None else output_path.expanduser().resolve())
+    if source_folder in destination.parents or destination == source_folder:
+        raise ValueError("The hex output file must be outside the input directory")
+    if destination.suffix.lower() != '.py':
+        raise ValueError("Hex folder output must be a single .py file, e.g. -o project_packed.py")
+    if destination.exists():
+        raise FileExistsError(f"Output file already exists: {destination}")
+    validate_report_path(config, source_folder, destination)
+    if config.verify_entry and config.hex_entry and Path(config.verify_entry) != Path(config.hex_entry):
+        raise ValueError("--verify-entry must select the same entrypoint as --hex-entry")
+    entry = config.hex_entry or config.verify_entry
+    if progress:
+        progress("Preprocess: hexadecimal — started")
+    packing = bundle_project(source_folder, entry, SKIPPED_DIRECTORIES, cwd=config.hex_cwd,
+                             entry_mode=config.hex_entry_mode)
+    if progress:
+        progress(f"Preprocess: hexadecimal — completed: packed {packing.manifest['file_count']} files")
+    return _process_source_file(source_folder / packing.manifest['entry'], destination,
+        packing.source, config, progress, started, packing=packing, original_root=source_folder)
 
 
 def process_folder(
@@ -289,6 +351,8 @@ def process_folder(
     source_folder = source_folder.expanduser().resolve()
     if not source_folder.is_dir():
         raise ValueError("Input must be an existing directory")
+    if config.hex_pack:
+        return _process_hex_folder(source_folder, output_folder, config, progress, started)
     destination_root = (
         source_folder.with_name(source_folder.name + "_processed")
         if output_folder is None
@@ -391,7 +455,7 @@ def process_folder(
          and not (name.startswith("__") and name.endswith("__"))},
         config.name_length,
         random.Random(config.seed),
-    )
+    ) if "name_mangler" in config.stage_order else {}
     folder_protected_names = exported_names | (
         all_project_identifiers - set(shared_name_mapping)
     )
@@ -407,7 +471,8 @@ def process_folder(
         if name in shared_name_mapping
     }
 
-    sources = {path: analysis.rewrite_references(path, shared_name_mapping) for path in python_files}
+    sources = ({path: analysis.rewrite_references(path, shared_name_mapping) for path in python_files}
+               if shared_name_mapping else dict(original_sources))
     function_coverage = ({path.relative_to(source_folder).as_posix():
         function_flow.assess_functions(source, allow_introspection=config.allow_introspection,
                                       extended=config.extended_flow)
@@ -494,13 +559,14 @@ def process_folder(
         # catches references in modules that do not bind a name locally and
         # ensures generated import bindings and their call sites stay aligned.
         for source_path, source in sources.items():
-            source = import_obfuscator.rewrite_project_imports(source, shared_name_mapping,
-                contexts[source_path].project_modules or set())
-            edits = name_mangler.python_edits(
-                source, shared_name_mapping, attribute_mapping, internal_keyword_names,
-                callable_names_by_path[source_path],
-            )
-            sources[source_path] = name_mangler.apply_edits(source, edits)
+            if shared_name_mapping:
+                source = import_obfuscator.rewrite_project_imports(source, shared_name_mapping,
+                    contexts[source_path].project_modules or set())
+                edits = name_mangler.python_edits(
+                    source, shared_name_mapping, attribute_mapping, internal_keyword_names,
+                    callable_names_by_path[source_path],
+                )
+                sources[source_path] = name_mangler.apply_edits(source, edits)
             compile(sources[source_path], str(source_path), "exec")
 
         if config.rename_modules:

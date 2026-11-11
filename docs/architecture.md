@@ -85,6 +85,28 @@ output is staged beside the destination and atomically replaced after explicit
 verification succeeds. Native source removal follows successful compilation
 and artifact detection. Compiler availability is an external requirement.
 
+### `hex_bundle.py`
+
+The optional hex prepass produces a deterministic ZIP+hex launcher before AST
+stages. Folder packing includes modules and data using the normal directory
+exclusions; file packing includes one script. Sources retain their original
+encoding bytes, and source-text APIs normalize the decoded encoding cookie.
+Entry selection distinguishes script/module execution, including explicit
+namespace-package entrypoints. Runtime invokes the selected interpreter
+against a temporary extracted tree and forwards arguments and exit status.
+The tree is kept through application exit handlers. Cleanup
+restores the original cwd before removing temporary files on Windows.
+
+Filesystem APIs hand the prepared launcher to the common atomic file writer,
+and the in-memory engine runs its text prepass only once before all layers.
+Source stage subsets and repetitions are supported; an empty sequence disables
+source transformations. Optional `hexadecimal`, `rename_modules` and `native`
+selectors are validated at their phase boundaries and normalized into config
+flags, keeping the source registry separate. `--hex-only` selects packing with
+an empty source sequence. Shared symbol rewrites are disabled when the selected
+sequence omits `name_mangler`. Single-file hex mode is
+separate from physical module relocation and native-module compilation.
+
 ### `stages/scopes.py`
 
 Project keyword rewriting checks lexical bindings, including parameters,

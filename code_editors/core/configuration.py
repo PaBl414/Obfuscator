@@ -43,6 +43,7 @@ REGISTERED_STAGE_IDS: tuple[StageId, ...] = (
 )
 
 DEFAULT_STAGE_ORDER: tuple[StageId, ...] = REGISTERED_STAGE_IDS
+OPTIONAL_STAGE_IDS = ("hexadecimal", "rename_modules", "native")
 
 ALL_STAGE_ORDER: tuple[str, ...] = tuple(
     "imports,junk,xor,name_mangler,function_flow,module_flow,"
@@ -51,16 +52,23 @@ ALL_STAGE_ORDER: tuple[str, ...] = tuple(
 
 
 def validate_stage_order(stage_order: Sequence[str]) -> None:
-    """Validate that an order contains every stage and no unknown IDs."""
-    known = set(REGISTERED_STAGE_IDS)
+    """Validate a selected sequence, including once-only boundary operations."""
+    known = set(REGISTERED_STAGE_IDS) | set(OPTIONAL_STAGE_IDS)
     provided = set(stage_order)
     unknown = sorted(provided - known)
-    missing = sorted(known - provided)
-    if unknown or missing:
-        raise ValueError(
-            "Stage order must contain every registered stage at least once; "
-            f"missing={missing}, unknown={unknown}."
-        )
+    if unknown:
+        raise ValueError(f"Unknown stage IDs: {unknown}. Available: {sorted(known)}")
+    for stage in OPTIONAL_STAGE_IDS:
+        if stage_order.count(stage) > 1:
+            raise ValueError(f"Optional operation {stage} can only occur once")
+    if "hexadecimal" in provided and stage_order[0] != "hexadecimal":
+        raise ValueError("hexadecimal must be first (packing precedes source transformations)")
+    boundary = False
+    for stage in stage_order:
+        if stage in ("rename_modules", "native"):
+            boundary = True
+        elif boundary:
+            raise ValueError("rename_modules and native must follow all source stages")
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,8 +97,22 @@ class PipelineConfig:
     benchmark_runs: int = 1
     metrics: bool = False
     keep_names: tuple[str, ...] = ()
+    hex_pack: bool = False
+    hex_entry: str | None = None
+    hex_cwd: str = "caller"
+    hex_entry_mode: str = "auto"
 
     def __post_init__(self) -> None:
+        validate_stage_order(self.stage_order)
+        # Boundary operations retain their own once-per-project execution phase.
+        if "hexadecimal" in self.stage_order:
+            object.__setattr__(self, "hex_pack", True)
+        if "rename_modules" in self.stage_order:
+            object.__setattr__(self, "rename_modules", True)
+        if "native" in self.stage_order and not self.native_modules:
+            raise ValueError("native requires at least one --native-module path")
+        object.__setattr__(self, "stage_order", tuple(
+            stage for stage in self.stage_order if stage not in OPTIONAL_STAGE_IDS))
         if self.layers < 1:
             raise ValueError("layers must be at least 1")
         if self.junk_count < 1:
@@ -123,6 +145,20 @@ class PipelineConfig:
             raise ValueError("Cases, output file checks and benchmark runs require a verification entrypoint")
         if self.rename_modules and self.native_modules:
             raise ValueError("Native modules and module relocation must be built separately")
+        if self.hex_entry is not None and not self.hex_pack:
+            raise ValueError("hex_entry requires hex_pack")
+        if self.hex_entry_mode not in {"auto", "script", "module"}:
+            raise ValueError("hex_entry_mode must be 'auto', 'script' or 'module'")
+        if not self.hex_pack and self.hex_entry_mode != 'auto':
+            raise ValueError("hex_entry_mode requires hex_pack")
+        if self.hex_cwd not in {"caller", "bundle"}:
+            raise ValueError("hex_cwd must be 'caller' or 'bundle'")
+        if not self.hex_pack and self.hex_cwd != "caller":
+            raise ValueError("hex_cwd requires hex_pack")
+        if self.hex_pack and (self.rename_modules or self.native_modules or self.verify_commands):
+            raise ValueError("Hex packing cannot be combined with module relocation, native modules or library test commands")
+        if self.hex_pack and self.hex_cwd == "bundle" and self.verify_files:
+            raise ValueError("Output-file verification requires --hex-cwd caller")
         if self.dispatch_mode not in ("branches", "table"):
             raise ValueError("dispatch_mode must be 'branches' or 'table'")
         validate_stage_order(self.stage_order)
